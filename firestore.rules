@@ -1,0 +1,472 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isTeamMember(teamId) {
+      return exists(/databases/$(database)/documents/teamMembers/$(teamId + '_' + request.auth.uid));
+    }
+
+    function isTeamOwner(teamId) {
+      return exists(/databases/$(database)/documents/teams/$(teamId)) &&
+        get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid;
+    }
+
+    function isTeamAdminOrOwner(teamId) {
+      return isTeamOwner(teamId) || (
+        isTeamMember(teamId) &&
+        get(/databases/$(database)/documents/teamMembers/$(teamId + '_' + request.auth.uid)).data.role in ['OWNER', 'ADMIN']
+      );
+    }
+
+    function isHallParticipant(hallId) {
+      return exists(/databases/$(database)/documents/hallMembers/$(hallId + '_' + request.auth.uid));
+    }
+
+    // 1. User Validation
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'displayName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'displayName', 'photoUrl', 'status', 'watchingTitle', 'activeTeamId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.id == request.auth.uid &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1024)) &&
+        data.status is string && data.status in ['ONLINE', 'WATCHING', 'OFFLINE'] &&
+        (!('watchingTitle' in data) || (data.watchingTitle is string && data.watchingTitle.size() <= 160)) &&
+        (!('activeTeamId' in data) || (data.activeTeamId is string && data.activeTeamId.size() <= 128)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn();
+      allow create: if isVerifiedUser() && isValidId(userId) && userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(userId) && userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'status', 'watchingTitle', 'activeTeamId', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 2. Team Validation
+    function isValidTeam(data) {
+      return data.keys().hasAll(['id', 'name', 'inviteCode', 'ownerId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'pin', 'description', 'imageUrl', 'inviteCode', 'ownerId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        (!('pin' in data) || (data.pin is string && data.pin.size() >= 1 && data.pin.size() <= 20)) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 300)) &&
+        (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 1024)) &&
+        data.inviteCode is string && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 32 &&
+        isValidId(data.ownerId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /teams/{teamId} {
+      allow get: if isSignedIn() && isValidId(teamId);
+      allow list: if isSignedIn();
+      allow create: if isVerifiedUser() && isValidId(teamId) &&
+        isValidTeam(incoming()) &&
+        incoming().id == teamId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(teamId) &&
+        isValidTeam(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        existing().ownerId == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'pin', 'description', 'imageUrl', 'inviteCode', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 3. TeamMember Validation
+    function isValidTeamMember(data) {
+      return data.keys().hasAll(['id', 'teamId', 'userId', 'displayName', 'role', 'presence', 'joinedAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'teamId', 'userId', 'displayName', 'photoUrl', 'role', 'presence', 'watchingTitle', 'joinedAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.teamId) &&
+        isValidId(data.userId) &&
+        data.id == data.teamId + '_' + data.userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1024)) &&
+        data.role is string && data.role in ['OWNER', 'ADMIN', 'MEMBER'] &&
+        data.presence is string && data.presence in ['ONLINE', 'WATCHING', 'OFFLINE'] &&
+        (!('watchingTitle' in data) || (data.watchingTitle is string && data.watchingTitle.size() <= 160)) &&
+        data.joinedAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /teamMembers/{memberId} {
+      allow get: if isSignedIn() && isValidId(memberId);
+      allow list: if isSignedIn();
+      allow create: if isVerifiedUser() && isValidId(memberId) &&
+        isValidTeamMember(incoming()) &&
+        incoming().id == memberId &&
+        incoming().userId == request.auth.uid &&
+        incoming().joinedAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/teams/$(incoming().teamId)) &&
+        (
+          (incoming().role == 'OWNER' && get(/databases/$(database)/documents/teams/$(incoming().teamId)).data.ownerId == request.auth.uid) ||
+          (incoming().role == 'MEMBER')
+        );
+      allow update: if isVerifiedUser() && isValidId(memberId) &&
+        isValidTeamMember(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().teamId == existing().teamId &&
+        incoming().userId == existing().userId &&
+        incoming().joinedAt == existing().joinedAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (existing().userId == request.auth.uid &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'presence', 'watchingTitle', 'updatedAt'])) ||
+          (isTeamOwner(existing().teamId) &&
+            existing().role != 'OWNER' &&
+            incoming().role in ['ADMIN', 'MEMBER'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'updatedAt']))
+        );
+      allow delete: if isVerifiedUser() && isValidId(memberId) &&
+        existing().role != 'OWNER' &&
+        (
+          existing().userId == request.auth.uid ||
+          isTeamOwner(existing().teamId) ||
+          (isTeamAdminOrOwner(existing().teamId) && existing().role == 'MEMBER')
+        );
+    }
+
+    // 4. LibraryItem Validation
+    function isValidLibraryItem(data) {
+      return data.keys().hasAll(['id', 'teamId', 'title', 'videoUrl', 'sourceType', 'category', 'durationMs', 'addedById', 'addedByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'teamId', 'title', 'description', 'posterUrl', 'backdropUrl', 'videoUrl', 'embedUrl', 'sourceType', 'category', 'durationMs', 'year', 'addedById', 'addedByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.teamId) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 1000)) &&
+        (!('posterUrl' in data) || (data.posterUrl is string && data.posterUrl.size() <= 1024)) &&
+        (!('backdropUrl' in data) || (data.backdropUrl is string && data.backdropUrl.size() <= 1024)) &&
+        data.videoUrl is string && data.videoUrl.size() >= 1 && data.videoUrl.size() <= 2048 &&
+        (!('embedUrl' in data) || (data.embedUrl is string && data.embedUrl.size() <= 2048)) &&
+        data.sourceType is string && data.sourceType in ['DIRECT_URL', 'CLOUD_VIDEO', 'DEVICE_LOCAL', 'WEBPAGE'] &&
+        data.category is string && data.category in ['MOVIES', 'VIDEOS', 'RECENTLY_ADDED', 'WATCH_AGAIN'] &&
+        data.durationMs is number && data.durationMs >= 0 &&
+        (!('year' in data) || (data.year is number && data.year >= 1900 && data.year <= 2100)) &&
+        isValidId(data.addedById) &&
+        data.addedByName is string && data.addedByName.size() >= 1 && data.addedByName.size() <= 80 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /libraryItems/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId);
+      allow list: if isSignedIn();
+      allow create: if isVerifiedUser() && isValidId(itemId) &&
+        isValidLibraryItem(incoming()) &&
+        incoming().id == itemId &&
+        incoming().addedById == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isTeamMember(incoming().teamId);
+      allow update: if isVerifiedUser() && isValidId(itemId) &&
+        isValidLibraryItem(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().teamId == existing().teamId &&
+        incoming().addedById == existing().addedById &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (existing().addedById == request.auth.uid || isTeamAdminOrOwner(existing().teamId)) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'posterUrl', 'backdropUrl', 'category', 'durationMs', 'year', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(itemId) &&
+        (existing().addedById == request.auth.uid || isTeamAdminOrOwner(existing().teamId));
+    }
+
+    // 5. MovieHall Validation
+    function isValidMovieHall(data) {
+      return data.keys().hasAll(['id', 'teamId', 'hostId', 'hostName', 'title', 'sourceType', 'status', 'isPlaying', 'positionMs', 'durationMs', 'playbackSpeed', 'viewerCount', 'shareType', 'hostConnected', 'startedAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'teamId', 'hostId', 'hostName', 'libraryItemId', 'title', 'posterUrl', 'backdropUrl', 'videoUrl', 'sourceType', 'status', 'isPlaying', 'positionMs', 'durationMs', 'playbackSpeed', 'viewerCount', 'shareType', 'hostConnected', 'startedAt', 'updatedAt', 'endedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.teamId) &&
+        isValidId(data.hostId) &&
+        data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 80 &&
+        (!('libraryItemId' in data) || (data.libraryItemId is string && data.libraryItemId.size() <= 128)) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        (!('posterUrl' in data) || (data.posterUrl is string && data.posterUrl.size() <= 1024)) &&
+        (!('backdropUrl' in data) || (data.backdropUrl is string && data.backdropUrl.size() <= 1024)) &&
+        (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 2048)) &&
+        data.sourceType is string && data.sourceType in ['DEVICE_LOCAL', 'DIRECT_URL', 'CLOUD_VIDEO', 'SCREEN_SHARE', 'APP_SHARE', 'WEBPAGE'] &&
+        data.status is string && data.status in ['LIVE', 'PAUSED', 'ENDED'] &&
+        data.isPlaying is bool &&
+        data.positionMs is number && data.positionMs >= 0 &&
+        data.durationMs is number && data.durationMs >= 0 &&
+        data.playbackSpeed is number && data.playbackSpeed >= 0.25 && data.playbackSpeed <= 4.0 &&
+        data.viewerCount is number && data.viewerCount >= 0 &&
+        data.shareType is string && data.shareType in ['NONE', 'SCREEN_SHARE', 'APP_SHARE', 'DEVICE_STREAM'] &&
+        data.hostConnected is bool &&
+        data.startedAt is timestamp &&
+        data.updatedAt is timestamp &&
+        (!('endedAt' in data) || data.endedAt is timestamp);
+    }
+
+    match /movieHalls/{hallId} {
+      allow get: if isSignedIn() && isValidId(hallId) && isTeamMember(existing().teamId);
+      allow list: if isSignedIn() && existing().hostId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(hallId) &&
+        isValidMovieHall(incoming()) &&
+        incoming().id == hallId &&
+        incoming().hostId == request.auth.uid &&
+        incoming().status == 'LIVE' &&
+        incoming().startedAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isTeamMember(incoming().teamId);
+      allow update: if isVerifiedUser() && isValidId(hallId) &&
+        isValidMovieHall(incoming()) &&
+        existing().status != 'ENDED' &&
+        incoming().id == existing().id &&
+        incoming().teamId == existing().teamId &&
+        incoming().hostId == existing().hostId &&
+        incoming().startedAt == existing().startedAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (existing().hostId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'libraryItemId', 'posterUrl', 'backdropUrl', 'videoUrl', 'sourceType', 'status', 'isPlaying', 'positionMs', 'durationMs', 'playbackSpeed', 'viewerCount', 'shareType', 'hostConnected', 'updatedAt', 'endedAt'])) ||
+          (isHallParticipant(hallId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['viewerCount', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // 6. HallMember Validation
+    function isValidHallMember(data) {
+      return data.keys().hasAll(['id', 'hallId', 'teamId', 'userId', 'displayName', 'role', 'micEnabled', 'cameraEnabled', 'isSpeaking', 'joinedAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'hallId', 'teamId', 'userId', 'displayName', 'photoUrl', 'role', 'micEnabled', 'cameraEnabled', 'isSpeaking', 'joinedAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.hallId) &&
+        isValidId(data.teamId) &&
+        isValidId(data.userId) &&
+        data.id == data.hallId + '_' + data.userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1024)) &&
+        data.role is string && data.role in ['HOST', 'VIEWER'] &&
+        data.micEnabled is bool &&
+        data.cameraEnabled is bool &&
+        data.isSpeaking is bool &&
+        data.joinedAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /hallMembers/{memberId} {
+      allow get: if isSignedIn() && isValidId(memberId) && isTeamMember(existing().teamId);
+      allow list: if isSignedIn() && existing().userId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(memberId) &&
+        isValidHallMember(incoming()) &&
+        incoming().id == memberId &&
+        incoming().joinedAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/movieHalls/$(incoming().hallId)) &&
+        (
+          (get(/databases/$(database)/documents/movieHalls/$(incoming().hallId)).data.hostId == request.auth.uid) ||
+          (incoming().userId == request.auth.uid &&
+            incoming().role == 'VIEWER' &&
+            exists(/databases/$(database)/documents/hallJoinRequests/$(incoming().hallId + '_' + request.auth.uid)) &&
+            get(/databases/$(database)/documents/hallJoinRequests/$(incoming().hallId + '_' + request.auth.uid)).data.status == 'ACCEPTED')
+        );
+      allow update: if isVerifiedUser() && isValidId(memberId) &&
+        isValidHallMember(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().hallId == existing().hallId &&
+        incoming().teamId == existing().teamId &&
+        incoming().userId == existing().userId &&
+        incoming().role == existing().role &&
+        incoming().joinedAt == existing().joinedAt &&
+        incoming().updatedAt == request.time &&
+        existing().userId == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'micEnabled', 'cameraEnabled', 'isSpeaking', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(memberId) &&
+        (existing().userId == request.auth.uid ||
+          get(/databases/$(database)/documents/movieHalls/$(existing().hallId)).data.hostId == request.auth.uid);
+    }
+
+    // 7. HallJoinRequest Validation
+    function isValidHallJoinRequest(data) {
+      return data.keys().hasAll(['id', 'hallId', 'teamId', 'hostId', 'requesterId', 'requesterName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'hallId', 'teamId', 'hostId', 'requesterId', 'requesterName', 'requesterPhotoUrl', 'status', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.hallId) &&
+        isValidId(data.teamId) &&
+        isValidId(data.hostId) &&
+        isValidId(data.requesterId) &&
+        data.id == data.hallId + '_' + data.requesterId &&
+        data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 80 &&
+        (!('requesterPhotoUrl' in data) || (data.requesterPhotoUrl is string && data.requesterPhotoUrl.size() <= 1024)) &&
+        data.status is string && data.status in ['PENDING', 'ACCEPTED', 'DECLINED', 'CANCELLED'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /hallJoinRequests/{requestId} {
+      allow get: if isSignedIn() && isValidId(requestId) &&
+        (existing().requesterId == request.auth.uid || existing().hostId == request.auth.uid);
+      allow list: if isSignedIn() &&
+        (existing().requesterId == request.auth.uid || existing().hostId == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(requestId) &&
+        isValidHallJoinRequest(incoming()) &&
+        incoming().id == requestId &&
+        incoming().requesterId == request.auth.uid &&
+        incoming().status == 'PENDING' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isTeamMember(incoming().teamId) &&
+        exists(/databases/$(database)/documents/movieHalls/$(incoming().hallId));
+      allow update: if isVerifiedUser() && isValidId(requestId) &&
+        isValidHallJoinRequest(incoming()) &&
+        existing().status == 'PENDING' &&
+        incoming().id == existing().id &&
+        incoming().hallId == existing().hallId &&
+        incoming().teamId == existing().teamId &&
+        incoming().hostId == existing().hostId &&
+        incoming().requesterId == existing().requesterId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (existing().hostId == request.auth.uid &&
+            incoming().status in ['ACCEPTED', 'DECLINED'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+          (existing().requesterId == request.auth.uid &&
+            incoming().status == 'CANCELLED' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // 8. HallMessage Validation
+    function isValidHallMessage(data) {
+      return data.keys().hasAll(['id', 'hallId', 'teamId', 'senderId', 'senderName', 'text', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'hallId', 'teamId', 'senderId', 'senderName', 'senderPhotoUrl', 'text', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.hallId) &&
+        isValidId(data.teamId) &&
+        isValidId(data.senderId) &&
+        data.senderId == request.auth.uid &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+        (!('senderPhotoUrl' in data) || (data.senderPhotoUrl is string && data.senderPhotoUrl.size() <= 1024)) &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 500 &&
+        data.createdAt is timestamp;
+    }
+
+    match /hallMessages/{messageId} {
+      allow get: if isSignedIn() && isValidId(messageId) && isHallParticipant(existing().hallId);
+      allow list: if isSignedIn() && existing().senderId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(messageId) &&
+        isValidHallMessage(incoming()) &&
+        incoming().id == messageId &&
+        incoming().createdAt == request.time &&
+        isHallParticipant(incoming().hallId);
+      allow update, delete: if false;
+    }
+
+    // 9. HallActivity Validation
+    function isValidHallActivity(data) {
+      return data.keys().hasAll(['id', 'hallId', 'teamId', 'actorId', 'actorName', 'eventType', 'message', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'hallId', 'teamId', 'actorId', 'actorName', 'eventType', 'message', 'reactionEmoji', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.hallId) &&
+        isValidId(data.teamId) &&
+        isValidId(data.actorId) &&
+        data.actorId == request.auth.uid &&
+        data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 80 &&
+        data.eventType is string && data.eventType in [
+          'USER_JOINED', 'USER_LEFT', 'PLAYBACK_PLAY', 'PLAYBACK_PAUSE',
+          'PLAYBACK_SEEK', 'CHAT_MESSAGE', 'REACTION', 'JOIN_REQUEST',
+          'JOIN_ACCEPTED', 'JOIN_DECLINED', 'SCREEN_SHARE_STARTED',
+          'SCREEN_SHARE_STOPPED', 'HALL_ENDED'
+        ] &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 240 &&
+        (!('reactionEmoji' in data) || (data.reactionEmoji is string && data.reactionEmoji.size() <= 16)) &&
+        data.createdAt is timestamp;
+    }
+
+    match /hallActivity/{activityId} {
+      allow get: if isSignedIn() && isValidId(activityId) && isHallParticipant(existing().hallId);
+      allow list: if isSignedIn() && existing().actorId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(activityId) &&
+        isValidHallActivity(incoming()) &&
+        incoming().id == activityId &&
+        incoming().createdAt == request.time &&
+        (isHallParticipant(incoming().hallId) || isTeamMember(incoming().teamId));
+      allow update, delete: if false;
+    }
+
+    // 10. Notification Validation
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'recipientId', 'senderId', 'senderName', 'type', 'title', 'body', 'read', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'recipientId', 'senderId', 'senderName', 'type', 'title', 'body', 'hallId', 'teamId', 'read', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.recipientId) &&
+        isValidId(data.senderId) &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+        data.type is string && data.type in ['JOIN_REQUEST', 'REQUEST_ACCEPTED', 'REQUEST_DECLINED', 'HALL_STARTED', 'TEAM_INVITE'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 240 &&
+        (!('hallId' in data) || (data.hallId is string && data.hallId.size() <= 128)) &&
+        (!('teamId' in data) || (data.teamId is string && data.teamId.size() <= 128)) &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) && existing().recipientId == request.auth.uid;
+      allow list: if isSignedIn() && existing().recipientId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().id == notificationId &&
+        incoming().senderId == request.auth.uid &&
+        incoming().read == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().recipientId == existing().recipientId &&
+        incoming().senderId == existing().senderId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        existing().recipientId == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+      allow delete: if isVerifiedUser() && isValidId(notificationId) && existing().recipientId == request.auth.uid;
+    }
+  }
+}

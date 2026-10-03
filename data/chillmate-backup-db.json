@@ -1,0 +1,28 @@
+{
+  "users": [
+    {
+      "id": "user_ameen",
+      "email": "ameen.isse@gmail.com",
+      "password": "Amin@2613",
+      "displayName": "Ameen",
+      "systemRole": "SUPER_ADMIN",
+      "accountStatus": "APPROVED",
+      "authSource": "EMAIL",
+      "createdAt": "2026-09-01T10:00:00.000Z",
+      "updatedAt": "2026-09-30T22:00:00.000Z"
+    },
+    {
+      "id": "user_test_sam",
+      "email": "sam@example.com",
+      "displayName": "Sam",
+      "systemRole": "USER",
+      "accountStatus": "APPROVED",
+      "authSource": "EMAIL",
+      "createdAt": "2026-10-02T18:20:12.607Z",
+      "updatedAt": "2026-10-02T18:20:12.607Z"
+    }
+  ],
+  "teams": [],
+  "teamMembers": [],
+  "libraryItems": []
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Chill Mate",
+  "description": "Watch together. Chill together. Private team video library and host-controlled Movie Hall with real-time presentation sharing, local device playback without upload, live reactions, voice/video chat, and adaptive fullscreen collaboration.",
+  "requestFramePermissions": ["camera", "microphone", "display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

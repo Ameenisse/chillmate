@@ -1,0 +1,258 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Public user profile and presence state in Chill Mate.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "photoUrl": { "type": "string", "maxLength": 1024 },
+        "status": { "type": "string", "enum": ["ONLINE", "WATCHING", "OFFLINE"], "maxLength": 32 },
+        "watchingTitle": { "type": "string", "maxLength": 160 },
+        "activeTeamId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "displayName", "status", "createdAt", "updatedAt"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "Private team for watching movies and sharing a library.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "pin": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "description": { "type": "string", "maxLength": 300 },
+        "imageUrl": { "type": "string", "maxLength": 1024 },
+        "inviteCode": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "inviteCode", "ownerId", "createdAt", "updatedAt"]
+    },
+    "TeamMember": {
+      "title": "TeamMember",
+      "description": "Membership record linking a user to a team with role and presence.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "photoUrl": { "type": "string", "maxLength": 1024 },
+        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MEMBER"], "maxLength": 16 },
+        "presence": { "type": "string", "enum": ["ONLINE", "WATCHING", "OFFLINE"], "maxLength": 16 },
+        "watchingTitle": { "type": "string", "maxLength": 160 },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "teamId", "userId", "displayName", "role", "presence", "joinedAt", "updatedAt"]
+    },
+    "LibraryItem": {
+      "title": "LibraryItem",
+      "description": "A movie or video item in a team's shared library.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "posterUrl": { "type": "string", "maxLength": 1024 },
+        "backdropUrl": { "type": "string", "maxLength": 1024 },
+        "videoUrl": { "type": "string", "maxLength": 2048 },
+        "sourceType": { "type": "string", "enum": ["DIRECT_URL", "CLOUD_VIDEO", "DEVICE_LOCAL", "WEBPAGE"], "maxLength": 32 },
+        "category": { "type": "string", "enum": ["MOVIES", "VIDEOS", "RECENTLY_ADDED", "WATCH_AGAIN"], "maxLength": 32 },
+        "durationMs": { "type": "number" },
+        "year": { "type": "number" },
+        "addedById": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "addedByName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "teamId", "title", "videoUrl", "sourceType", "category", "durationMs", "addedById", "addedByName", "createdAt", "updatedAt"]
+    },
+    "MovieHall": {
+      "title": "MovieHall",
+      "description": "An active or ended host-controlled Movie Hall session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hostId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hostName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "libraryItemId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "posterUrl": { "type": "string", "maxLength": 1024 },
+        "backdropUrl": { "type": "string", "maxLength": 1024 },
+        "videoUrl": { "type": "string", "maxLength": 2048 },
+        "sourceType": { "type": "string", "enum": ["DEVICE_LOCAL", "DIRECT_URL", "CLOUD_VIDEO", "SCREEN_SHARE", "APP_SHARE", "WEBPAGE"], "maxLength": 32 },
+        "status": { "type": "string", "enum": ["LIVE", "PAUSED", "ENDED"], "maxLength": 16 },
+        "isPlaying": { "type": "boolean" },
+        "positionMs": { "type": "number" },
+        "durationMs": { "type": "number" },
+        "playbackSpeed": { "type": "number" },
+        "viewerCount": { "type": "number" },
+        "shareType": { "type": "string", "enum": ["NONE", "SCREEN_SHARE", "APP_SHARE", "DEVICE_STREAM"], "maxLength": 32 },
+        "hostConnected": { "type": "boolean" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "teamId", "hostId", "hostName", "title", "sourceType", "status", "isPlaying", "positionMs", "durationMs", "playbackSpeed", "viewerCount", "shareType", "hostConnected", "startedAt", "updatedAt"]
+    },
+    "HallMember": {
+      "title": "HallMember",
+      "description": "An approved participant currently inside a Movie Hall.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hallId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "photoUrl": { "type": "string", "maxLength": 1024 },
+        "role": { "type": "string", "enum": ["HOST", "VIEWER"], "maxLength": 16 },
+        "micEnabled": { "type": "boolean" },
+        "cameraEnabled": { "type": "boolean" },
+        "isSpeaking": { "type": "boolean" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "hallId", "teamId", "userId", "displayName", "role", "micEnabled", "cameraEnabled", "isSpeaking", "joinedAt", "updatedAt"]
+    },
+    "HallJoinRequest": {
+      "title": "HallJoinRequest",
+      "description": "Request by a team member to join an active Movie Hall.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hallId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hostId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requesterId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requesterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "requesterPhotoUrl": { "type": "string", "maxLength": 1024 },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "DECLINED", "CANCELLED"], "maxLength": 16 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "hallId", "teamId", "hostId", "requesterId", "requesterName", "status", "createdAt", "updatedAt"]
+    },
+    "HallMessage": {
+      "title": "HallMessage",
+      "description": "Realtime text or emoji chat message in a Movie Hall.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hallId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "senderPhotoUrl": { "type": "string", "maxLength": 1024 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "hallId", "teamId", "senderId", "senderName", "text", "createdAt"]
+    },
+    "HallActivity": {
+      "title": "HallActivity",
+      "description": "Realtime system activity event in a Movie Hall.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hallId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teamId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "eventType": {
+          "type": "string",
+          "enum": [
+            "USER_JOINED",
+            "USER_LEFT",
+            "PLAYBACK_PLAY",
+            "PLAYBACK_PAUSE",
+            "PLAYBACK_SEEK",
+            "CHAT_MESSAGE",
+            "REACTION",
+            "JOIN_REQUEST",
+            "JOIN_ACCEPTED",
+            "JOIN_DECLINED",
+            "SCREEN_SHARE_STARTED",
+            "SCREEN_SHARE_STOPPED",
+            "HALL_ENDED"
+          ],
+          "maxLength": 32
+        },
+        "message": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "reactionEmoji": { "type": "string", "maxLength": 16 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "hallId", "teamId", "actorId", "actorName", "eventType", "message", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Realtime notification for join requests, acceptances, and hall alerts.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "type": { "type": "string", "enum": ["JOIN_REQUEST", "REQUEST_ACCEPTED", "REQUEST_DECLINED", "HALL_STARTED", "TEAM_INVITE"], "maxLength": 32 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "hallId": { "type": "string", "maxLength": 128 },
+        "teamId": { "type": "string", "maxLength": 128 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "recipientId", "senderId", "senderName", "type", "title", "body", "read", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Public user profiles (display name, avatar, non-PII presence)."
+    },
+    "/teams/{teamId}": {
+      "schema": { "$ref": "#/entities/Team" },
+      "description": "Private teams."
+    },
+    "/teamMembers/{memberId}": {
+      "schema": { "$ref": "#/entities/TeamMember" },
+      "description": "Team membership records keyed by {teamId}_{userId}."
+    },
+    "/libraryItems/{itemId}": {
+      "schema": { "$ref": "#/entities/LibraryItem" },
+      "description": "Team video library items."
+    },
+    "/movieHalls/{hallId}": {
+      "schema": { "$ref": "#/entities/MovieHall" },
+      "description": "Movie Halls hosted within a team."
+    },
+    "/hallMembers/{memberId}": {
+      "schema": { "$ref": "#/entities/HallMember" },
+      "description": "Approved participants inside a Movie Hall keyed by {hallId}_{userId}."
+    },
+    "/hallJoinRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/HallJoinRequest" },
+      "description": "Join requests for a Movie Hall keyed by {hallId}_{requesterId}."
+    },
+    "/hallMessages/{messageId}": {
+      "schema": { "$ref": "#/entities/HallMessage" },
+      "description": "Realtime chat messages inside a Movie Hall."
+    },
+    "/hallActivity/{activityId}": {
+      "schema": { "$ref": "#/entities/HallActivity" },
+      "description": "Realtime activity log events inside a Movie Hall."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "User notifications."
+    }
+  }
+}
