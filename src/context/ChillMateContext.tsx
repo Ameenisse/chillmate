@@ -144,6 +144,7 @@ interface ChillMateContextValue {
   setActiveLibraryScope: (scope: 'SELF' | string) => void;
   selfLibraryItems: LibraryItem[];
   teamLibraryItemsByTeam: Record<string, LibraryItem[]>;
+  getTeamLibraryItems: (teamId: string) => LibraryItem[];
   allAccessibleLibraryItems: LibraryItem[];
   canDeleteLibraryItem: (item: LibraryItem) => boolean;
   isOwnerOfTeam: (teamId: string) => boolean;
@@ -587,6 +588,14 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
     return map;
   }, [libraryItems, userTeams]);
+
+  const getTeamLibraryItems = useCallback(
+    (teamId: string): LibraryItem[] => {
+      if (!teamId) return [];
+      return teamLibraryItemsByTeam[teamId] || [];
+    },
+    [teamLibraryItemsByTeam]
+  );
 
   // Currently selected Library (Self Library or specific Team Library)
   const visibleLibraryItems = useMemo(() => {
@@ -3760,6 +3769,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveLibraryScope,
     selfLibraryItems,
     teamLibraryItemsByTeam,
+    getTeamLibraryItems,
     allAccessibleLibraryItems,
     canDeleteLibraryItem,
     isOwnerOfTeam,

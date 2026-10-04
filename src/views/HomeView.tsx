@@ -40,7 +40,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
     isApprovedInHall,
     allAccessibleLibraryItems,
     selfLibraryItems,
-    getTeamLibraryItems,
+    teamLibraryItemsByTeam,
     canDeleteLibraryItem,
     isOwnerOfTeam,
     setActiveLibraryScope,
@@ -451,7 +451,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       })}
 
       {teams.map((team) => {
-        const teamItems = getTeamLibraryItems(team.id);
+        const teamItems = teamLibraryItemsByTeam[team.id] || [];
         const isOwner = isOwnerOfTeam(team.id);
         return renderPosterRow(`${team.name} Library`, teamItems, {
           badgeText: isOwner

@@ -184,10 +184,50 @@ const ChillMateContent: React.FC = () => {
   );
 };
 
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; errorMessage: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: unknown) {
+    return {
+      hasError: true,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-[#09090b] text-zinc-100 flex items-center justify-center p-4">
+          <div className="max-w-md w-full rounded-3xl bg-zinc-900 border border-zinc-800 p-6 space-y-4 text-center">
+            <h1 className="text-lg font-bold text-white">Chill Mate Reload Required</h1>
+            <p className="text-xs text-zinc-400 break-words">{this.state.errorMessage}</p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="min-h-[42px] px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white"
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
-    <ChillMateProvider>
-      <ChillMateContent />
-    </ChillMateProvider>
+    <RootErrorBoundary>
+      <ChillMateProvider>
+        <ChillMateContent />
+      </ChillMateProvider>
+    </RootErrorBoundary>
   );
 }
