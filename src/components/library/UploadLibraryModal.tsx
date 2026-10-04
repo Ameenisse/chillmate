@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { CheckCircle2, CloudUpload, Film, Loader2, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { CheckCircle2, CloudUpload, Film, Loader2, Lock, Users, X } from 'lucide-react';
 import { useChillMate } from '../../context/ChillMateContext';
 import { LibraryCategory } from '../../types';
 import { formatFileSize } from '../../utils/media';
@@ -10,18 +10,29 @@ interface UploadLibraryModalProps {
 }
 
 export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, onClose }) => {
-  const { uploadVideoToTeamLibrary } = useChillMate();
+  const { uploadVideoToTeamLibrary, activeLibraryScope, teams } = useChillMate();
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<LibraryCategory>('MOVIES');
+  const [targetScope, setTargetScope] = useState<'SELF' | string>(activeLibraryScope);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [completed, setCompleted] = useState(false);
 
+  useEffect(() => {
+    if (isOpen) {
+      setTargetScope(activeLibraryScope);
+    }
+  }, [isOpen, activeLibraryScope]);
+
   if (!isOpen) return null;
+
+  const isTargetSelf = targetScope === 'SELF' || !teams.some((t) => t.id === targetScope);
+  const selectedTeamName =
+    teams.find((t) => t.id === targetScope)?.name || 'Team';
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,7 +44,8 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
       title || selectedFile.name,
       description,
       category,
-      (pct) => setProgress(pct)
+      (pct) => setProgress(pct),
+      targetScope
     );
     setUploading(false);
     setCompleted(true);
@@ -49,16 +61,20 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md rounded-2xl bg-zinc-950 border border-zinc-800 p-6 shadow-2xl space-y-5">
+      <div className="w-full max-w-md rounded-2xl bg-zinc-950 border border-zinc-800 p-6 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400">
               <CloudUpload className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-zinc-100">ADD TO TEAM LIBRARY</h2>
+              <h2 className="text-base font-semibold text-zinc-100">
+                {isTargetSelf ? 'UPLOAD TO SELF LIBRARY' : `UPLOAD TO ${selectedTeamName.toUpperCase()} LIBRARY`}
+              </h2>
               <p className="text-xs text-zinc-400">
-                Explicit upload to Firebase Storage for Team Library
+                {isTargetSelf
+                  ? 'Private upload — only you can see and manage this video'
+                  : `Shared with ${selectedTeamName} members — only Team Owner can delete`}
               </p>
             </div>
           </div>
@@ -71,6 +87,51 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
         </div>
 
         <form onSubmit={handleUpload} className="space-y-4">
+          {/* Destination Library Selector */}
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1.5">
+              Destination Library
+            </label>
+            <div className="grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetScope('SELF')}
+                className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center justify-between transition-colors ${
+                  isTargetSelf
+                    ? 'bg-emerald-600/20 border-emerald-500 text-emerald-200'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>My Self Library (Only Me)</span>
+                </span>
+                <span className="text-[10px] text-emerald-400">Private</span>
+              </button>
+
+              {teams.map((t) => {
+                const active = targetScope === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setTargetScope(t.id)}
+                    className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center justify-between transition-colors ${
+                      active
+                        ? 'bg-rose-600/20 border-rose-500 text-rose-100'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <Users className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span className="truncate">{t.name} Team Library</span>
+                    </span>
+                    <span className="text-[10px] text-rose-400 shrink-0">Team Shared</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <input
             ref={fileRef}
             type="file"
@@ -165,7 +226,11 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
           {completed && (
             <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center gap-2 text-xs text-emerald-300">
               <CheckCircle2 className="w-4 h-4" />
-              <span>Uploaded to Team Library!</span>
+              <span>
+                {isTargetSelf
+                  ? 'Uploaded to your Personal Self Library!'
+                  : `Uploaded to ${selectedTeamName} Library!`}
+              </span>
             </div>
           )}
 
@@ -174,7 +239,11 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
             disabled={!selectedFile || uploading}
             className="w-full min-h-[46px] rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-xs font-semibold text-white transition-colors"
           >
-            {uploading ? `Uploading (${progress}%)` : 'UPLOAD TO TEAM LIBRARY'}
+            {uploading
+              ? `Uploading (${progress}%)`
+              : isTargetSelf
+              ? 'UPLOAD TO MY SELF LIBRARY'
+              : `UPLOAD TO ${selectedTeamName.toUpperCase()} LIBRARY`}
           </button>
         </form>
       </div>

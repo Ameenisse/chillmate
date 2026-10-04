@@ -5,7 +5,16 @@ import React, {
   useImperativeHandle,
   useId,
   useRef,
+  useState,
 } from 'react';
+import { ExternalLink, Maximize2, Minimize2, RefreshCw, Shield } from 'lucide-react';
+import { parseYouTubeVideoId } from '../../utils/media';
+import {
+  enterFullscreenLandscape,
+  exitFullscreenLandscape,
+  isFullscreenActive,
+  onFullscreenChange,
+} from '../../utils/fullscreen';
 
 export interface YouTubeVideoPlayerHandle {
   play: () => void;
@@ -31,6 +40,8 @@ interface YouTubeVideoPlayerProps {
   onTimeUpdate?: (currentTimeMs: number, durationMs: number) => void;
   onDurationChange?: (durationMs: number) => void;
   onPlayStateChange?: (playing: boolean) => void;
+  onToggleFullscreen?: () => void;
+  controlsVisible?: boolean;
   className?: string;
 }
 
@@ -54,6 +65,8 @@ export const YouTubeVideoPlayer = forwardRef<
       onTimeUpdate,
       onDurationChange,
       onPlayStateChange,
+      onToggleFullscreen,
+      controlsVisible,
       className = 'w-full h-full',
     },
     ref
@@ -62,13 +75,38 @@ export const YouTubeVideoPlayer = forwardRef<
     const effectiveSpeed = playbackSpeed !== undefined ? playbackSpeed : playbackRate;
     const rawId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
     const playerId = `yt_player_${rawId}`;
+    const containerRef = useRef<HTMLDivElement | null>(null);
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
     const connectedRef = useRef<boolean>(false);
+    const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
     const localTimeSecRef = useRef<number>(Math.floor((initialPositionMs || 0) / 1000));
     const localDurationSecRef = useRef<number>(0);
     const initialStartSec = useRef<number>(
       Math.max(0, Math.floor((initialPositionMs || 0) / 1000))
     );
+
+    // Sync fullscreen state
+    useEffect(() => {
+      setIsFullscreen(isFullscreenActive());
+      return onFullscreenChange((active) => {
+        setIsFullscreen(active);
+      });
+    }, []);
+
+    const handleToggleFullscreen = async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (onToggleFullscreen) {
+        onToggleFullscreen();
+        return;
+      }
+      if (isFullscreenActive()) {
+        await exitFullscreenLandscape();
+        setIsFullscreen(false);
+      } else if (containerRef.current) {
+        await enterFullscreenLandscape(containerRef.current);
+        setIsFullscreen(true);
+      }
+    };
 
     // Reset initial start time only when videoId changes
     useEffect(() => {
@@ -182,17 +220,33 @@ export const YouTubeVideoPlayer = forwardRef<
               onTimeUpdate?.(curMs, durMs);
             }
             if (typeof info.playerState === 'number') {
-              if (info.playerState === 1) {
-                onPlayStateChange?.(true);
-              } else if (info.playerState === 2) {
-                onPlayStateChange?.(false);
+              if (isViewerSync) {
+                if (info.playerState === 2 && isPlaying) {
+                  sendCommand('playVideo');
+                } else if (info.playerState === 1 && !isPlaying) {
+                  sendCommand('pauseVideo');
+                }
+              } else {
+                if (info.playerState === 1) {
+                  onPlayStateChange?.(true);
+                } else if (info.playerState === 2) {
+                  onPlayStateChange?.(false);
+                }
               }
             }
           } else if (data.event === 'onStateChange' && typeof data.info === 'number') {
-            if (data.info === 1) {
-              onPlayStateChange?.(true);
-            } else if (data.info === 2) {
-              onPlayStateChange?.(false);
+            if (isViewerSync) {
+              if (data.info === 2 && isPlaying) {
+                sendCommand('playVideo');
+              } else if (data.info === 1 && !isPlaying) {
+                sendCommand('pauseVideo');
+              }
+            } else {
+              if (data.info === 1) {
+                onPlayStateChange?.(true);
+              } else if (data.info === 2) {
+                onPlayStateChange?.(false);
+              }
             }
           }
         } catch {
@@ -202,7 +256,7 @@ export const YouTubeVideoPlayer = forwardRef<
 
       window.addEventListener('message', handleMessage);
       return () => window.removeEventListener('message', handleMessage);
-    }, [onTimeUpdate, onPlayStateChange]);
+    }, [onTimeUpdate, onDurationChange, onPlayStateChange, isViewerSync, isPlaying, sendCommand]);
 
     // Sync play / pause state prop
     useEffect(() => {
@@ -221,47 +275,137 @@ export const YouTubeVideoPlayer = forwardRef<
 
     // Sync playback rate prop
     useEffect(() => {
-      sendCommand('setPlaybackRate', [playbackRate]);
-    }, [playbackRate, sendCommand]);
+      sendCommand('setPlaybackRate', [effectiveSpeed]);
+    }, [effectiveSpeed, sendCommand]);
 
-    // Sync viewer / external seek changes when syncedPositionMs diverges by >3.5s
+    // Sync viewer / external seek changes when effectivePositionMs diverges by >2.2s
     useEffect(() => {
-      if (typeof syncedPositionMs !== 'number') return;
-      const targetSec = Math.max(0, syncedPositionMs / 1000);
-      if (Math.abs(localTimeSecRef.current - targetSec) > 3.5) {
+      if (typeof effectivePositionMs !== 'number') return;
+      const targetSec = Math.max(0, effectivePositionMs / 1000);
+      if (Math.abs(localTimeSecRef.current - targetSec) > 2.2) {
         localTimeSecRef.current = targetSec;
         sendCommand('seekTo', [targetSec, true]);
       }
-    }, [syncedPositionMs, isViewerSync, sendCommand]);
+    }, [effectivePositionMs, isViewerSync, sendCommand]);
 
-    const originParam =
-      typeof window !== 'undefined' ? encodeURIComponent(window.location.origin) : '';
-    const embedSrc = `https://www.youtube.com/embed/${encodeURIComponent(
-      videoId
-    )}?autoplay=1&playsinline=1&enablejsapi=1&controls=1&rel=0&modestbranding=1&iv_load_policy=3&start=${
+    const cleanVideoId = parseYouTubeVideoId(videoId) || videoId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 11);
+    const [usePrivacyDomain, setUsePrivacyDomain] = useState<boolean>(false);
+    const [internalControlsVisible, setInternalControlsVisible] = useState<boolean>(true);
+    const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+    const triggerInternalActivity = useCallback(() => {
+      setInternalControlsVisible(true);
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = setTimeout(() => {
+        setInternalControlsVisible(false);
+      }, 3000);
+    }, []);
+
+    useEffect(() => {
+      triggerInternalActivity();
+      return () => {
+        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      };
+    }, [triggerInternalActivity]);
+
+    const showButtons = controlsVisible !== undefined ? controlsVisible : internalControlsVisible;
+    const host = usePrivacyDomain ? 'www.youtube-nocookie.com' : 'www.youtube.com';
+
+    const origin = typeof window !== 'undefined' ? encodeURIComponent(window.location.origin) : '';
+    const referrer = typeof window !== 'undefined' ? encodeURIComponent(window.location.href) : '';
+
+    const embedSrc = `https://${host}/embed/${encodeURIComponent(
+      cleanVideoId
+    )}?autoplay=1&playsinline=1&enablejsapi=1&controls=${isViewerSync ? 0 : 1}&disablekb=${
+      isViewerSync ? 1 : 0
+    }&rel=0&modestbranding=1&iv_load_policy=3&fs=1&origin=${origin}&widget_referrer=${referrer}&start=${
       initialStartSec.current
-    }${originParam ? `&origin=${originParam}` : ''}`;
+    }${muted ? '&mute=1' : ''}`;
 
     return (
-      <div className={`relative bg-black overflow-hidden flex items-center justify-center w-full h-full ${className}`}>
-        <iframe
-          id={playerId}
-          ref={iframeRef}
-          src={embedSrc}
-          title={title}
-          onLoad={() => {
-            registerBridgeListeners();
-            if (isPlaying) {
-              sendCommand('playVideo');
-            }
-          }}
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-          allowFullScreen
-          className="w-full h-full max-w-full max-h-full aspect-video border-0 bg-black"
-        />
+      <div
+        ref={containerRef}
+        onMouseMove={triggerInternalActivity}
+        onMouseEnter={triggerInternalActivity}
+        onTouchStart={triggerInternalActivity}
+        className={`relative bg-black overflow-hidden flex items-center justify-center w-full h-full min-w-0 min-h-0 group ${className}`}
+      >
+        <div className="w-full h-full max-w-full max-h-full aspect-video flex items-center justify-center relative min-w-0 min-h-0">
+          <iframe
+            id={playerId}
+            ref={iframeRef}
+            src={embedSrc}
+            title={title}
+            onLoad={() => {
+              registerBridgeListeners();
+              if (typeof effectivePositionMs === 'number' && effectivePositionMs > 1000) {
+                sendCommand('seekTo', [Math.floor(effectivePositionMs / 1000), true]);
+              }
+              if (isPlaying) {
+                sendCommand('playVideo');
+              } else {
+                sendCommand('pauseVideo');
+              }
+            }}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+            referrerPolicy="strict-origin-when-cross-origin"
+            className="w-full h-full border-0 bg-black aspect-video"
+          />
+          {isViewerSync && (
+            <div
+              onClick={triggerInternalActivity}
+              onMouseMove={triggerInternalActivity}
+              onTouchStart={triggerInternalActivity}
+              className="absolute inset-0 z-10 cursor-default"
+              title="Playback is controlled live by the Hall Host"
+            />
+          )}
+        </div>
+
+        {/* Dedicated Fullscreen Toggle Button on the video player container */}
+        <button
+          type="button"
+          onClick={handleToggleFullscreen}
+          className={`absolute top-3 right-3 z-30 min-h-[38px] min-w-[38px] p-2 rounded-xl bg-black/75 hover:bg-black/95 text-white border border-white/20 shadow-xl backdrop-blur-md transition-all active:scale-95 flex items-center justify-center ${
+            showButtons ? 'opacity-90 hover:opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+          }`}
+          title={isFullscreen ? 'Exit Fullscreen' : 'Expand Video to Full Screen'}
+        >
+          {isFullscreen ? <Minimize2 className="w-4 h-4 text-rose-400" /> : <Maximize2 className="w-4 h-4 text-white" />}
+        </button>
+
+        {/* Top Controls Overlay: External YouTube Link & Privacy Domain Toggle */}
+        <div
+          className={`absolute top-3 left-3 z-30 flex items-center gap-1.5 transition-opacity duration-200 ${
+            showButtons ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          <a
+            href={`https://www.youtube.com/watch?v=${encodeURIComponent(cleanVideoId)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="min-h-[34px] px-2.5 py-1 rounded-xl bg-black/70 hover:bg-black/90 text-zinc-300 hover:text-white border border-white/15 text-[11px] font-medium shadow-lg backdrop-blur-md transition-all flex items-center gap-1.5"
+            title="Open video on YouTube in a new tab"
+          >
+            <ExternalLink className="w-3 h-3 text-red-500" />
+            <span>YouTube</span>
+          </a>
+
+          <button
+            type="button"
+            onClick={() => setUsePrivacyDomain((prev) => !prev)}
+            className="min-h-[34px] px-2 py-1 rounded-xl bg-black/70 hover:bg-black/90 text-zinc-300 hover:text-white border border-white/15 text-[10px] font-medium shadow-lg backdrop-blur-md transition-all flex items-center gap-1"
+            title={usePrivacyDomain ? 'Switch to Standard Embed (youtube.com)' : 'Switch to Privacy-Enhanced (youtube-nocookie.com)'}
+          >
+            <Shield className={`w-3 h-3 ${usePrivacyDomain ? 'text-emerald-400' : 'text-zinc-400'}`} />
+            <span>{usePrivacyDomain ? 'NoCookie' : 'Standard'}</span>
+          </button>
+        </div>
       </div>
     );
   }
 );
 
 YouTubeVideoPlayer.displayName = 'YouTubeVideoPlayer';
+

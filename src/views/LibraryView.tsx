@@ -2,17 +2,19 @@ import React, { useState } from 'react';
 import {
   CheckCircle2,
   CloudUpload,
+  Crown,
   Download,
   Film,
   HardDrive,
   Link2,
   Loader2,
+  Lock,
   Play,
   Radio,
   RotateCcw,
   Search,
-  Sparkles,
   Trash2,
+  Users,
   Zap,
 } from 'lucide-react';
 import { useChillMate } from '../context/ChillMateContext';
@@ -48,6 +50,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 }) => {
   const {
     libraryItems,
+    activeLibraryScope,
+    setActiveLibraryScope,
+    selfLibraryItems,
+    teamLibraryItemsByTeam,
+    teams,
+    selectTeam,
+    canDeleteLibraryItem,
+    isOwnerOfTeam,
     activeHall,
     setSelectedLibraryItem,
     startWatchAlone,
@@ -75,6 +85,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [isQuickDownloading, setIsQuickDownloading] = useState(false);
   const [isQuickPlaying, setIsQuickPlaying] = useState(false);
 
+  const isSelfLibraryActive = activeLibraryScope === 'SELF';
+  const activeScopedTeam = !isSelfLibraryActive
+    ? teams.find((t) => t.id === activeLibraryScope)
+    : undefined;
+  const isCurrentTeamOwner = activeScopedTeam ? isOwnerOfTeam(activeScopedTeam.id) : false;
+
   const triggerQuickAutoDownload = async (targetUrl?: string) => {
     const raw = (targetUrl ?? quickLinkUrl).trim();
     if (!raw) return;
@@ -89,6 +105,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       qualityLabel: fmt.label,
       sizeBytes: fmt.sizeBytes,
       category: 'RECENTLY_ADDED',
+      targetLibraryScope: activeLibraryScope,
     });
     setIsQuickDownloading(false);
   };
@@ -165,14 +182,108 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-6 pb-24">
+      {/* MULTI-LIBRARY SELECTOR BAR: 1 Self Library (Only user can see) + 1 Library per Team (Only team members can see; Only Team Owner can delete) */}
+      <div className="p-3.5 rounded-2xl bg-zinc-900/90 border border-zinc-800 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="font-semibold text-zinc-200 flex items-center gap-2">
+            <span>Multi-Library Spaces</span>
+            <span aria-hidden="true" className="text-zinc-600">·</span>
+            <span className="text-zinc-400 font-normal">
+              Switch between your private Self Library and each Team&apos;s shared Library
+            </span>
+          </div>
+          <span className="text-[11px] font-mono-tabular text-zinc-400">
+            {isSelfLibraryActive
+              ? 'Private: Only you can see & manage'
+              : isCurrentTeamOwner
+              ? 'Team Owner: You can manage & delete videos'
+              : 'Team Member: View & watch (Only Team Owner can delete)'}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* 1. Self Library Tab */}
+          <button
+            type="button"
+            onClick={() => setActiveLibraryScope('SELF')}
+            className={`min-h-[42px] px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-colors ${
+              isSelfLibraryActive
+                ? 'bg-emerald-600/20 border-emerald-500 text-emerald-200 shadow-lg shadow-emerald-950/40'
+                : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+            }`}
+          >
+            <Lock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span>My Self Library (Only Me)</span>
+            <span className="font-mono-tabular text-[11px] opacity-80">
+              ({selfLibraryItems.length})
+            </span>
+          </button>
+
+          {/* 2. Separate Team Library Tab for each Team the user belongs to */}
+          {teams.map((team) => {
+            const isSelected = activeLibraryScope === team.id;
+            const teamVideosCount = (teamLibraryItemsByTeam[team.id] || []).length;
+            const ownerOfThisTeam = isOwnerOfTeam(team.id);
+
+            return (
+              <button
+                key={team.id}
+                type="button"
+                onClick={() => {
+                  selectTeam(team.id);
+                  setActiveLibraryScope(team.id);
+                }}
+                className={`min-h-[42px] px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-colors ${
+                  isSelected
+                    ? 'bg-rose-600/20 border-rose-500 text-rose-100 shadow-lg shadow-rose-950/40'
+                    : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+                }`}
+              >
+                {ownerOfThisTeam ? (
+                  <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                ) : (
+                  <Users className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                )}
+                <span>{team.name} Library</span>
+                <span className="font-mono-tabular text-[11px] opacity-80">
+                  ({teamVideosCount})
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Header & Source Action Buttons (Sections 8, 9, 10, 11, 12) */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-zinc-100 tracking-tight">
-            Team Video Library
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl sm:text-2xl font-bold text-zinc-100 tracking-tight">
+              {isSelfLibraryActive
+                ? 'My Self Library (Private)'
+                : `${activeScopedTeam?.name || 'Team'} Video Library`}
+            </h1>
+            <span aria-hidden="true" className="text-zinc-600">·</span>
+            <span
+              className={`text-xs font-semibold ${
+                isSelfLibraryActive
+                  ? 'text-emerald-400'
+                  : isCurrentTeamOwner
+                  ? 'text-amber-400'
+                  : 'text-rose-400'
+              }`}
+            >
+              {isSelfLibraryActive
+                ? 'ONLY YOU CAN SEE'
+                : isCurrentTeamOwner
+                ? 'TEAM OWNER (FULL MANAGE & DELETE)'
+                : 'TEAM MEMBERS ONLY (OWNER MANAGES DELETES)'}
+            </span>
+          </div>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Paste any link to auto-download into your Library like VidMate, play from device, or host a Movie Hall
+            {isSelfLibraryActive
+              ? 'Videos added here are strictly private to your account — only you can see, watch, or delete them.'
+              : `Shared exclusively with ${activeScopedTeam?.name || 'Team'} members. Any member can watch or host a Hall; only the Team Owner can delete videos from this Team Library.`}
           </p>
         </div>
 
@@ -301,7 +412,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               ) : (
                 <Download className="w-3.5 h-3.5" />
               )}
-              <span>DOWNLOAD TO LIBRARY</span>
+              <span>
+                {isSelfLibraryActive ? 'SAVE TO SELF LIBRARY' : 'SAVE TO TEAM LIBRARY'}
+              </span>
             </button>
           </div>
         </form>
@@ -508,7 +621,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           <div className="flex items-center gap-2 text-zinc-200">
             <Trash2 className="w-4 h-4 text-rose-400 shrink-0" />
             <span>
-              Removed <strong className="text-white">"{lastDeletedLibraryItem.title}"</strong> from Team Library.
+              Removed <strong className="text-white">&quot;{lastDeletedLibraryItem.title}&quot;</strong> from{' '}
+              {!lastDeletedLibraryItem.teamId || lastDeletedLibraryItem.libraryScope === 'SELF'
+                ? 'My Self Library'
+                : 'Team Library'}
+              .
             </span>
           </div>
           <button
@@ -528,10 +645,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           <Film className="w-10 h-10 text-zinc-500 mx-auto" />
           <div className="space-y-1">
             <h3 className="text-base font-semibold text-zinc-100">
-              Your Team Library is empty.
+              {isSelfLibraryActive
+                ? 'Your Personal Self Library is empty.'
+                : `${activeScopedTeam?.name || 'Team'} Library is empty.`}
             </h3>
             <p className="text-xs text-zinc-400">
-              Paste a webpage link above to auto-download into your Library, play from device storage, or upload a video.
+              {isSelfLibraryActive
+                ? 'Paste a link above or upload a video to save privately in your Self Library (only you can see it).'
+                : `Paste a link above or upload a video to share with ${activeScopedTeam?.name || 'your team'} members.`}
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-3">
@@ -557,135 +678,170 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
-          {filteredItems.map((item) => (
-            <div
-              key={item.id}
-              className="group rounded-2xl bg-zinc-900/60 border border-zinc-800/90 hover:border-zinc-700 overflow-hidden flex flex-col transition-all"
-            >
+          {filteredItems.map((item) => {
+            const canDelete = canDeleteLibraryItem(item);
+            const isItemSelf =
+              !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
+
+            return (
               <div
-                onClick={() => setSelectedLibraryItem(item)}
-                className="relative aspect-[3/4] bg-zinc-900 cursor-pointer overflow-hidden"
+                key={item.id}
+                className="group rounded-2xl bg-zinc-900/60 border border-zinc-800/90 hover:border-zinc-700 overflow-hidden flex flex-col transition-all"
               >
-                <img
-                  src={item.posterUrl || ASSETS.posterInterstellar}
-                  alt={item.title}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent" />
-
-                {/* Top-right Delete from Library icon button */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void deleteLibraryItem(item.id);
-                  }}
-                  title="Delete from Library"
-                  className="absolute top-2.5 right-2.5 min-h-[34px] min-w-[34px] rounded-xl bg-black/75 hover:bg-rose-600 text-zinc-300 hover:text-white border border-white/10 flex items-center justify-center transition-colors z-10"
+                <div
+                  onClick={() => setSelectedLibraryItem(item)}
+                  className="relative aspect-[3/4] bg-zinc-900 cursor-pointer overflow-hidden"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                  <img
+                    src={item.posterUrl || ASSETS.posterInterstellar}
+                    alt={item.title}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent" />
 
-                <div className="absolute bottom-3 left-3 right-3 space-y-1">
-                  <h3 className="text-sm font-semibold text-zinc-100 truncate">
-                    {item.title}
-                  </h3>
-                  {/* Unboxed clean metadata (Zero-Pill Discipline) */}
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
-                    {item.isDownloaded ? (
+                  {/* Top-left Library Scope indicator */}
+                  <div className="absolute top-2.5 left-2.5 px-2 py-1 rounded-lg bg-black/75 border border-white/10 text-[10px] font-semibold text-zinc-200 flex items-center gap-1 z-10">
+                    {isItemSelf ? (
                       <>
-                        <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Downloaded
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono-tabular">
-                          {item.downloadQuality || '1080p HD'}
-                        </span>
+                        <Lock className="w-2.5 h-2.5 text-emerald-400" />
+                        <span>Self</span>
                       </>
                     ) : (
                       <>
-                        {item.year && <span className="font-mono-tabular">{item.year}</span>}
-                        {item.year && <span aria-hidden="true">·</span>}
-                        <span className="font-mono-tabular">
-                          {formatHumanDuration(item.durationMs)}
+                        <Users className="w-2.5 h-2.5 text-rose-400" />
+                        <span className="truncate max-w-[100px]">
+                          {activeScopedTeam?.name || 'Team'}
                         </span>
-                        <span aria-hidden="true">·</span>
-                        <span>{item.category}</span>
                       </>
                     )}
                   </div>
-                  {item.isDownloaded && item.fileSizeBytes && (
-                    <div className="text-[10px] text-zinc-400 font-mono-tabular">
-                      {item.platformName || 'Web Link'} · {formatFileSize(item.fileSizeBytes)}
-                    </div>
-                  )}
-                </div>
-              </div>
 
-              <div className="p-3 space-y-2 border-t border-zinc-800/80 bg-zinc-950/60">
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() =>
-                      startWatchAlone({
-                        title: item.title,
-                        videoUrl: item.videoUrl,
-                        embedUrl: item.embedUrl,
-                        posterUrl: item.posterUrl,
-                        sourceType: item.sourceType,
-                        durationMs: item.durationMs,
-                        initialPositionMs: item.progressMs || 0,
-                      })
-                    }
-                    className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-[11px] font-semibold text-zinc-200 flex items-center justify-center gap-1 transition-colors"
-                  >
-                    <Play className="w-3 h-3 fill-current" />
-                    <span>Play Alone</span>
-                  </button>
-                  <button
-                    onClick={() =>
-                      startMovieHall({
-                        title: item.title,
-                        videoUrl: item.videoUrl,
-                        embedUrl: item.embedUrl,
-                        posterUrl: item.posterUrl,
-                        backdropUrl: item.backdropUrl || item.posterUrl,
-                        libraryItemId: item.id,
-                        sourceType: item.sourceType,
-                        durationMs: item.durationMs,
-                      })
-                    }
-                    className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-[11px] font-semibold text-white flex items-center justify-center gap-1 transition-colors"
-                  >
-                    <Radio className="w-3 h-3" />
-                    <span>Start Hall</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {item.isDownloaded && (
+                  {/* Top-right Delete from Library icon button — strictly only if canDelete is true */}
+                  {canDelete && (
                     <button
                       type="button"
-                      onClick={() => saveLibraryItemToDeviceDisk(item)}
-                      className="flex-1 min-h-[32px] px-2.5 py-1 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 text-[11px] font-medium text-emerald-300 flex items-center justify-center gap-1.5 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteLibraryItem(item.id);
+                      }}
+                      title="Delete from Library"
+                      className="absolute top-2.5 right-2.5 min-h-[34px] min-w-[34px] rounded-xl bg-black/75 hover:bg-rose-600 text-zinc-300 hover:text-white border border-white/10 flex items-center justify-center transition-colors z-10"
                     >
-                      <Download className="w-3 h-3" />
-                      <span>Save MP4</span>
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => void deleteLibraryItem(item.id)}
-                    className="flex-1 min-h-[32px] px-2.5 py-1 rounded-lg bg-zinc-900/90 hover:bg-rose-600/20 border border-zinc-800 hover:border-rose-500/40 text-[11px] font-medium text-zinc-400 hover:text-rose-300 flex items-center justify-center gap-1.5 transition-colors"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    <span>Delete</span>
-                  </button>
+
+                  <div className="absolute bottom-3 left-3 right-3 space-y-1">
+                    <h3 className="text-sm font-semibold text-zinc-100 truncate">
+                      {item.title}
+                    </h3>
+                    {/* Unboxed clean metadata (Zero-Pill Discipline) */}
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
+                      {item.isDownloaded ? (
+                        <>
+                          <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Downloaded
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono-tabular">
+                            {item.downloadQuality || '1080p HD'}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          {item.year && <span className="font-mono-tabular">{item.year}</span>}
+                          {item.year && <span aria-hidden="true">·</span>}
+                          <span className="font-mono-tabular">
+                            {formatHumanDuration(item.durationMs)}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>{item.category}</span>
+                        </>
+                      )}
+                    </div>
+                    {item.isDownloaded && item.fileSizeBytes && (
+                      <div className="text-[10px] text-zinc-400 font-mono-tabular">
+                        {item.platformName || 'Web Link'} · {formatFileSize(item.fileSizeBytes)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-3 space-y-2 border-t border-zinc-800/80 bg-zinc-950/60">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() =>
+                        startWatchAlone({
+                          title: item.title,
+                          videoUrl: item.videoUrl,
+                          embedUrl: item.embedUrl,
+                          posterUrl: item.posterUrl,
+                          sourceType: item.sourceType,
+                          durationMs: item.durationMs,
+                          initialPositionMs: item.progressMs || 0,
+                        })
+                      }
+                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-[11px] font-semibold text-zinc-200 flex items-center justify-center gap-1 transition-colors"
+                    >
+                      <Play className="w-3 h-3 fill-current" />
+                      <span>Play Alone</span>
+                    </button>
+                    <button
+                      onClick={() =>
+                        startMovieHall({
+                          title: item.title,
+                          videoUrl: item.videoUrl,
+                          embedUrl: item.embedUrl,
+                          posterUrl: item.posterUrl,
+                          backdropUrl: item.backdropUrl || item.posterUrl,
+                          libraryItemId: item.id,
+                          sourceType: item.sourceType,
+                          durationMs: item.durationMs,
+                        })
+                      }
+                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-[11px] font-semibold text-white flex items-center justify-center gap-1 transition-colors"
+                    >
+                      <Radio className="w-3 h-3" />
+                      <span>Start Hall</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {item.isDownloaded && (
+                      <button
+                        type="button"
+                        onClick={() => saveLibraryItemToDeviceDisk(item)}
+                        className="flex-1 min-h-[32px] px-2.5 py-1 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 text-[11px] font-medium text-emerald-300 flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Save MP4</span>
+                      </button>
+                    )}
+                    {canDelete ? (
+                      <button
+                        type="button"
+                        onClick={() => void deleteLibraryItem(item.id)}
+                        className="flex-1 min-h-[32px] px-2.5 py-1 rounded-lg bg-zinc-900/90 hover:bg-rose-600/20 border border-zinc-800 hover:border-rose-500/40 text-[11px] font-medium text-zinc-400 hover:text-rose-300 flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
+                    ) : (
+                      <div
+                        className="flex-1 min-h-[32px] px-2.5 py-1 rounded-lg bg-zinc-900/40 border border-zinc-800/60 text-[10px] font-medium text-zinc-500 flex items-center justify-center gap-1"
+                        title="Only the Team Owner can delete videos from this Team Library"
+                      >
+                        <Crown className="w-3 h-3 text-amber-500/70" />
+                        <span>Owner Managed</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

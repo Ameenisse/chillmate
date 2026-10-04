@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, Download, Play, Radio, Trash2, X } from 'lucide-react';
+import { CheckCircle2, Crown, Download, Lock, Play, Radio, Trash2, Users, X } from 'lucide-react';
 import { useChillMate } from '../../context/ChillMateContext';
 import { ASSETS, formatFileSize, formatHumanDuration } from '../../utils/media';
 
@@ -11,11 +11,19 @@ export const VideoDetailModal: React.FC = () => {
     startMovieHall,
     saveLibraryItemToDeviceDisk,
     deleteLibraryItem,
+    canDeleteLibraryItem,
+    teams,
   } = useChillMate();
 
   if (!selectedLibraryItem) return null;
 
   const item = selectedLibraryItem;
+  const canDelete = canDeleteLibraryItem(item);
+  const isSelfItem =
+    !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
+  const itemTeamName = !isSelfItem
+    ? teams.find((t) => t.id === item.teamId)?.name || 'Team'
+    : 'My Self Library';
 
   const handlePlayAlone = () => {
     startWatchAlone({
@@ -101,6 +109,15 @@ export const VideoDetailModal: React.FC = () => {
                 {item.title}
               </h2>
               <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400 mt-1">
+                <span className="inline-flex items-center gap-1 font-semibold text-zinc-200">
+                  {isSelfItem ? (
+                    <Lock className="w-3 h-3 text-emerald-400" />
+                  ) : (
+                    <Users className="w-3 h-3 text-rose-400" />
+                  )}
+                  {isSelfItem ? 'My Self Library' : `${itemTeamName} Library`}
+                </span>
+                <span aria-hidden="true">·</span>
                 <span>Added by {item.addedByName}</span>
                 <span aria-hidden="true">·</span>
                 <span>Source: {item.sourceType.replace('_', ' ')}</span>
@@ -146,13 +163,20 @@ export const VideoDetailModal: React.FC = () => {
               <Download className="w-4 h-4" />
               <span>SAVE MP4 TO DEVICE</span>
             </button>
-            <button
-              onClick={handleDelete}
-              className="min-h-[44px] px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-rose-600/20 border border-zinc-800 hover:border-rose-500/40 text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center justify-center gap-2 transition-colors"
-            >
-              <Trash2 className="w-4 h-4" />
-              <span>DELETE FROM LIBRARY</span>
-            </button>
+            {canDelete ? (
+              <button
+                onClick={handleDelete}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-rose-600/20 border border-zinc-800 hover:border-rose-500/40 text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center justify-center gap-2 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>DELETE FROM LIBRARY</span>
+              </button>
+            ) : (
+              <div className="min-h-[44px] px-4 py-2.5 rounded-xl bg-zinc-900/50 border border-zinc-800 text-xs font-medium text-zinc-400 flex items-center justify-center gap-2">
+                <Crown className="w-4 h-4 text-amber-400" />
+                <span>Only Team Owner Can Delete</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -72,18 +72,25 @@ export function parseYouTubeVideoId(rawUrl?: string | null): string | null {
   const trimmed = rawUrl.trim();
   if (!trimmed) return null;
 
-  // Match YouTube thumbnail URLs (e.g., https://i.ytimg.com/vi/VIDEO_ID/hqdefault.jpg)
-  const thumbMatch = trimmed.match(/(?:i\.ytimg\.com|img\.youtube\.com)\/vi\/([a-zA-Z0-9_-]{11})/i);
-  if (thumbMatch?.[1]) {
-    return thumbMatch[1];
+  // 1. Bare 11-char ID
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+    return trimmed;
   }
 
-  // Regex fallback for any YouTube watch, short, embed, live, or youtu.be URL
-  const regexMatch = trimmed.match(
-    /(?:youtube(?:-nocookie)?\.com\/(?:[^/\n\s]+\/\S+\/|(?:v|e(?:mbed)?|shorts|live)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i
-  );
-  if (regexMatch?.[1]) {
-    return regexMatch[1];
+  // 2. YouTube Thumbnail URL
+  const thumbMatch = trimmed.match(/(?:i\.ytimg\.com|img\.youtube\.com)\/vi\/([a-zA-Z0-9_-]{11})/i);
+  if (thumbMatch?.[1]) return thumbMatch[1];
+
+  // 3. YouTube standard patterns
+  const patterns = [
+    /(?:youtu\.be\/|v\/|u\/\w\/|embed\/|shorts\/|live\/)([a-zA-Z0-9_-]{11})/i,
+    /[?&]v=([a-zA-Z0-9_-]{11})/i,
+    /(?:youtube(?:-nocookie)?\.com\/(?:[^/\n\s]+\/\S+\/|(?:v|e(?:mbed)?|shorts|live)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i,
+  ];
+
+  for (const regex of patterns) {
+    const match = trimmed.match(regex);
+    if (match && match[1]) return match[1];
   }
 
   try {
@@ -95,19 +102,16 @@ export function parseYouTubeVideoId(rawUrl?: string | null): string | null {
     const host = parsed.hostname.toLowerCase();
     if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
       const id = parsed.pathname.slice(1).split('/')[0];
-      return id && id.length >= 11 ? id.slice(0, 11) : id || null;
+      if (id && id.length >= 11) return id.slice(0, 11);
     }
-    if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
-      const vParam = parsed.searchParams.get('v');
-      if (vParam) return vParam.slice(0, 11);
-      if (
-        parsed.pathname.startsWith('/shorts/') ||
-        parsed.pathname.startsWith('/embed/') ||
-        parsed.pathname.startsWith('/live/') ||
-        parsed.pathname.startsWith('/v/')
-      ) {
-        const id = parsed.pathname.split('/')[2];
-        return id ? id.slice(0, 11) : null;
+    if (host.includes('youtube.com')) {
+      const v = parsed.searchParams.get('v');
+      if (v && v.length >= 11) return v.slice(0, 11);
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        if (['shorts', 'embed', 'live', 'v'].includes(parts[i].toLowerCase()) && parts[i + 1]) {
+          return parts[i + 1].slice(0, 11);
+        }
       }
     }
   } catch {
@@ -155,6 +159,48 @@ export async function resolveWebpageOrMediaUrl(
     };
   }
 
+  // Fast resolution for YouTube video URLs, short URLs (youtu.be), shorts, and direct IDs (preserves case)
+  const detectedYtId = parseYouTubeVideoId(trimmed);
+  if (detectedYtId) {
+    const canonicalYtUrl = `https://www.youtube.com/watch?v=${detectedYtId}`;
+    const ytEmbedUrl = `https://www.youtube.com/embed/${detectedYtId}?autoplay=1&playsinline=1&enablejsapi=1&controls=1&rel=0&modestbranding=1&iv_load_policy=3&fs=1`;
+    let ytTitle = `YouTube Video (${detectedYtId})`;
+
+    // Try fast asynchronous oEmbed title resolution
+    try {
+      const oembedRes = await fetch(
+        `https://noembed.com/embed?url=${encodeURIComponent(canonicalYtUrl)}`,
+        { signal: AbortSignal.timeout(1800) }
+      );
+      if (oembedRes.ok) {
+        const oembed = (await oembedRes.json()) as { title?: string };
+        if (oembed?.title) ytTitle = oembed.title;
+      }
+    } catch {
+      // Fallback: title remains YouTube Video
+    }
+
+    return {
+      valid: true,
+      mode: 'DIRECT_VIDEO',
+      platform: 'YouTube Video',
+      originalUrl: canonicalYtUrl,
+      title: ytTitle,
+      thumbnailUrl: `https://i.ytimg.com/vi/${detectedYtId}/hqdefault.jpg`,
+      playableVideoUrl: canonicalYtUrl,
+      embedUrl: ytEmbedUrl,
+      proxyUrl: canonicalYtUrl,
+      isYouTube: true,
+      youTubeId: detectedYtId,
+      availableFormats: [
+        { id: '1080p', label: '1080p Full HD', ext: 'MP4', sizeBytes: 94371840, resolution: '1920x1080', videoUrl: canonicalYtUrl },
+        { id: '720p', label: '720p HD', ext: 'MP4', sizeBytes: 52428800, resolution: '1280x720', videoUrl: canonicalYtUrl },
+        { id: '480p', label: '480p SD', ext: 'MP4', sizeBytes: 28311552, resolution: '854x480', videoUrl: canonicalYtUrl },
+        { id: '360p', label: '360p Fast', ext: 'MP4', sizeBytes: 15728640, resolution: '640x360', videoUrl: canonicalYtUrl },
+      ],
+    };
+  }
+
   let parsed: URL;
   try {
     parsed = new URL(trimmed.startsWith('http') || trimmed.startsWith('blob:') ? trimmed : `https://${trimmed}`);
@@ -176,7 +222,6 @@ export async function resolveWebpageOrMediaUrl(
 
   const normalizedUrl = parsed.toString();
   const pathname = parsed.pathname.toLowerCase();
-  const detectedYtId = parseYouTubeVideoId(normalizedUrl);
 
   // Direct media file extensions
   const isDirectMediaExt =
@@ -188,7 +233,7 @@ export async function resolveWebpageOrMediaUrl(
     pathname.endsWith('.mov') ||
     normalizedUrl.startsWith('blob:');
 
-  if (isDirectMediaExt && !detectedYtId) {
+  if (isDirectMediaExt) {
     const fileTitle = decodeURIComponent(pathname.split('/').pop() || 'Direct Video Stream').replace(
       /\.(mp4|webm|m3u8|mpd|ogg|mov)$/i,
       ''
@@ -211,7 +256,7 @@ export async function resolveWebpageOrMediaUrl(
     };
   }
 
-  // Query backend Direct Video Extractor for any link (YouTube, Vimeo, Archive.org, Dailymotion, or any video link)
+  // Query backend Direct Video Extractor for any other link (Vimeo, Archive.org, Dailymotion, or custom link)
   try {
     const res = await fetch('/api/webpage/resolve', {
       method: 'POST',

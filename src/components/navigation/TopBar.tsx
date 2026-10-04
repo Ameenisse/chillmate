@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, Crown, LogOut } from 'lucide-react';
+import { ChevronDown, Crown, Lock, LogOut } from 'lucide-react';
 import { useChillMate } from '../../context/ChillMateContext';
 import { ActiveTab } from '../../types';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
@@ -15,11 +15,18 @@ export const TopBar: React.FC<TopBarProps> = ({ activeTab, onSelectTab }) => {
     activeTeam,
     selectTeam,
     currentUser,
+    currentAccount,
+    lockAppNow,
     isSuperAdmin,
     registeredUsers,
     setIsSuperAdminModalOpen,
     signOutUser,
   } = useChillMate();
+
+  const hasAppLockPin = Boolean(
+    (currentAccount?.appLockEnabled ?? currentUser.appLockEnabled) &&
+      (currentAccount?.appLockPin || currentUser.appLockPin)
+  );
 
   const pendingCount = registeredUsers.filter(
     (u) => u.accountStatus === 'PENDING'
@@ -97,6 +104,18 @@ export const TopBar: React.FC<TopBarProps> = ({ activeTab, onSelectTab }) => {
         )}
 
         <PWAInstallButton />
+
+        {hasAppLockPin && (
+          <button
+            type="button"
+            onClick={lockAppNow}
+            className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-emerald-500/30 text-xs font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+            title="Lock App Now (PIN Protected)"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Lock</span>
+          </button>
+        )}
 
         <button
           onClick={() => onSelectTab('PROFILE')}

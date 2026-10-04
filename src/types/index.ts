@@ -14,6 +14,8 @@ export interface RegisteredUserAccount {
   systemRole: SystemRole;
   accountStatus: AccountStatus;
   authSource: AuthRegistrationSource;
+  appLockPin?: string;
+  appLockEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,9 +49,11 @@ export type HallActivityEventType =
   | 'JOIN_DECLINED'
   | 'SCREEN_SHARE_STARTED'
   | 'SCREEN_SHARE_STOPPED'
+  | 'INTERVAL_BREAK_STARTED'
+  | 'INTERVAL_BREAK_ENDED'
   | 'HALL_ENDED';
 
-export type ReactionEmoji = '❤️' | '😂' | '😮' | '🔥' | '👏' | '🥹';
+export type ReactionEmoji = '❤️' | '😂' | '😮' | '🔥' | '👏' | '🥹' | '🍿' | '🎬';
 
 export interface UserProfile {
   id: string;
@@ -62,6 +66,8 @@ export interface UserProfile {
   systemRole?: SystemRole;
   accountStatus?: AccountStatus;
   authSource?: AuthRegistrationSource;
+  appLockPin?: string;
+  appLockEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +126,7 @@ export interface LibraryDownloadTask {
 export interface LibraryItem {
   id: string;
   teamId: string;
+  libraryScope?: 'SELF' | 'TEAM';
   title: string;
   description?: string;
   posterUrl?: string;
@@ -144,6 +151,15 @@ export interface LibraryItem {
   updatedAt: string;
 }
 
+export interface IntervalBreakState {
+  isActive: boolean;
+  message?: string;
+  totalDurationSec: number;
+  endsAt: number; // unix timestamp in ms
+  startedAt: number;
+  startedByName: string;
+}
+
 export interface MovieHall {
   id: string;
   teamId: string;
@@ -165,6 +181,7 @@ export interface MovieHall {
   shareType: ShareType;
   hostConnected: boolean;
   localFileName?: string;
+  breakState?: IntervalBreakState | null;
   startedAt: string;
   updatedAt: string;
   endedAt?: string;

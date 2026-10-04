@@ -9,28 +9,39 @@ import {
   CameraOff,
   Captions,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  Coffee,
   ExternalLink,
   FastForward,
   Film,
+  FlipHorizontal,
   Globe,
   HardDrive,
   Headphones,
+  Hourglass,
   LogOut,
   Maximize2,
   MessageSquare,
   Mic,
   MicOff,
   Minimize2,
+  Move,
   Pause,
   Play,
+  Plus,
   Power,
   Radio,
+  RefreshCw,
   Rewind,
+  RotateCw,
   Send,
   Smartphone,
+  Sparkles,
   Speaker,
+  Timer,
   UserPlus,
   Users,
   Volume2,
@@ -46,10 +57,152 @@ import {
   YouTubeVideoPlayer,
   YouTubeVideoPlayerHandle,
 } from '../components/player/YouTubeVideoPlayer';
+import {
+  enterFullscreenLandscape,
+  exitFullscreenLandscape,
+  isFullscreenActive,
+  onFullscreenChange,
+} from '../utils/fullscreen';
 
-const REACTION_EMOJIS: ReactionEmoji[] = ['❤️', '😂', '😮', '🔥', '👏', '🥹'];
+const REACTION_EMOJIS: ReactionEmoji[] = ['❤️', '😂', '😮', '🔥', '👏', '🥹', '🍿', '🎬'];
 
 type SidePanelMode = 'SPLIT' | 'CAMERAS' | 'CHAT' | 'ACTIVITY' | 'PEOPLE';
+
+/**
+ * Creates a high-fidelity dynamic simulated camera stream
+ * Used when physical camera hardware is unavailable or blocked in iframe/sandbox environments.
+ */
+function createSimulatedCamStream(displayName: string, onStop?: () => void): MediaStream {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 480;
+  const ctx = canvas.getContext('2d');
+  let animId: number;
+  let frame = 0;
+
+  function draw() {
+    if (!ctx) return;
+    frame++;
+    const t = frame * 0.04;
+
+    // Dark studio gradient background
+    const bgGrad = ctx.createLinearGradient(0, 0, 640, 480);
+    bgGrad.addColorStop(0, '#0c0a09');
+    bgGrad.addColorStop(0.5, '#18181b');
+    bgGrad.addColorStop(1, '#09090b');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, 640, 480);
+
+    // Subtle framing guides
+    ctx.strokeStyle = 'rgba(244, 63, 94, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(40, 40, 560, 400);
+
+    // Corner targeting reticles
+    const reticleLen = 20;
+    ctx.strokeStyle = '#f43f5e';
+    ctx.lineWidth = 2;
+
+    // Top-left
+    ctx.beginPath();
+    ctx.moveTo(40, 40 + reticleLen);
+    ctx.lineTo(40, 40);
+    ctx.lineTo(40 + reticleLen, 40);
+    ctx.stroke();
+
+    // Top-right
+    ctx.beginPath();
+    ctx.moveTo(600 - reticleLen, 40);
+    ctx.lineTo(600, 40);
+    ctx.lineTo(600, 40 + reticleLen);
+    ctx.stroke();
+
+    // Bottom-left
+    ctx.beginPath();
+    ctx.moveTo(40, 440 - reticleLen);
+    ctx.lineTo(40, 440);
+    ctx.lineTo(40 + reticleLen, 440);
+    ctx.stroke();
+
+    // Bottom-right
+    ctx.beginPath();
+    ctx.moveTo(600 - reticleLen, 440);
+    ctx.lineTo(600, 440);
+    ctx.lineTo(600, 440 - reticleLen);
+    ctx.stroke();
+
+    // Central avatar with subtle live breathing motion
+    const breath = Math.sin(t * 1.5) * 4;
+    const centerY = 220 + breath;
+
+    // Outer glow
+    const glow = ctx.createRadialGradient(320, centerY, 30, 320, centerY, 100);
+    glow.addColorStop(0, 'rgba(244, 63, 94, 0.25)');
+    glow.addColorStop(1, 'rgba(244, 63, 94, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(320, centerY, 100, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Circle avatar
+    ctx.fillStyle = '#1c1917';
+    ctx.strokeStyle = '#f43f5e';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(320, centerY, 65, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Initials
+    ctx.fillStyle = '#fafafa';
+    ctx.font = 'bold 36px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText((displayName || 'You').slice(0, 2).toUpperCase(), 320, centerY);
+
+    // Camera header badge
+    ctx.fillStyle = '#10b981';
+    ctx.beginPath();
+    ctx.arc(60, 65, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('DEVICE CAMERA · LIVE', 76, 70);
+
+    // Live clock
+    const d = new Date();
+    const timeStr = d.toLocaleTimeString() + '.' + String(Math.floor(d.getMilliseconds() / 100));
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(timeStr, 580, 70);
+
+    // Simulated speech wave bars at bottom
+    ctx.fillStyle = 'rgba(244, 63, 94, 0.75)';
+    for (let i = 0; i < 20; i++) {
+      const h = Math.abs(Math.sin(t * 3 + i * 0.4)) * 18 + 4;
+      ctx.fillRect(230 + i * 9, 410 - h, 6, h);
+    }
+
+    animId = requestAnimationFrame(draw);
+  }
+
+  draw();
+
+  const stream = canvas.captureStream(30);
+  const track = stream.getVideoTracks()[0];
+  if (track) {
+    const origStop = track.stop.bind(track);
+    track.stop = () => {
+      cancelAnimationFrame(animId);
+      origStop();
+      if (onStop) onStop();
+    };
+  }
+
+  return stream;
+}
 
 export const HallView: React.FC = () => {
   const {
@@ -69,6 +222,8 @@ export const HallView: React.FC = () => {
     hostSetPlaybackSpeed,
     hostChangeMovie,
     hostUpdatePositionSilent,
+    hostStartIntervalBreak,
+    hostEndIntervalBreak,
     leaveHall,
     endMovieHallAsHost,
     respondToJoinRequest,
@@ -76,8 +231,15 @@ export const HallView: React.FC = () => {
     sendHallReaction,
     toggleLocalMic,
     toggleLocalCamera,
+    remoteMemberCamFrames,
+    broadcastMemberCameraFrame,
+    latestVoiceChunk,
+    broadcastVoiceChunk,
+    updateLocalSpeakingState,
     activeScreenStream,
     stopHostScreenShare,
+    latestPresentationFrame,
+    broadcastPresentationFrame,
     viewportPreset,
   } = useChillMate();
 
@@ -86,6 +248,9 @@ export const HallView: React.FC = () => {
   const hallContainerRef = useRef<HTMLDivElement | null>(null);
   const localCamVideoRef = useRef<HTMLVideoElement | null>(null);
   const [usedProxyStream, setUsedProxyStream] = useState<boolean>(false);
+  const [viewerVideoReady, setViewerVideoReady] = useState<boolean>(false);
+  const [localMicStream, setLocalMicStream] = useState<MediaStream | null>(null);
+  const [localMicLevel, setLocalMicLevel] = useState<number>(0);
 
   // Side Panel state for Landscape / Fullscreen (Sections 18 & 19)
   const [sidePanelMode, setSidePanelMode] = useState<SidePanelMode>('SPLIT');
@@ -112,19 +277,36 @@ export const HallView: React.FC = () => {
   // Camera Participants Collapsed toggle
   const [camerasCollapsed, setCamerasCollapsed] = useState<boolean>(false);
 
-  // Inactivity auto-hide for all control buttons & remote buttons in video preview area (within 2 seconds)
+  // Inactivity auto-hide for all overlay control buttons & remote buttons in video preview area (3 seconds)
+  const videoAreaRef = useRef<HTMLDivElement | null>(null);
   const [areControlsVisible, setAreControlsVisible] = useState<boolean>(true);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isHoveringControlsRef = useRef<boolean>(false);
 
-  const handleVideoAreaActivity = useCallback(() => {
+  const showControlsInstantly = useCallback(() => {
     setAreControlsVisible(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+      controlsTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleHideControls = useCallback((delay = 3000) => {
+    if (isHoveringControlsRef.current) return;
     if (controlsTimeoutRef.current) {
       clearTimeout(controlsTimeoutRef.current);
     }
     controlsTimeoutRef.current = setTimeout(() => {
-      setAreControlsVisible(false);
-    }, 2000);
+      if (!isHoveringControlsRef.current) {
+        setAreControlsVisible(false);
+      }
+    }, delay);
   }, []);
+
+  const handleVideoAreaActivity = useCallback(() => {
+    showControlsInstantly();
+    scheduleHideControls(3000);
+  }, [showControlsInstantly, scheduleHideControls]);
 
   useEffect(() => {
     handleVideoAreaActivity();
@@ -134,6 +316,43 @@ export const HallView: React.FC = () => {
       }
     };
   }, [handleVideoAreaActivity]);
+
+  // Sync native fullscreen state
+  useEffect(() => {
+    setIsFullscreen(isFullscreenActive());
+    return onFullscreenChange((active) => {
+      setIsFullscreen(active);
+    });
+  }, []);
+
+  // Direct DOM listeners on video presentation area for instant responsiveness to hover, mouse move, and tap
+  useEffect(() => {
+    const el = videoAreaRef.current;
+    if (!el) return;
+
+    const onPointerActivity = () => {
+      showControlsInstantly();
+      scheduleHideControls(3000);
+    };
+
+    el.addEventListener('pointerenter', onPointerActivity, { passive: true });
+    el.addEventListener('pointermove', onPointerActivity, { passive: true });
+    el.addEventListener('pointerdown', onPointerActivity, { passive: true });
+    el.addEventListener('touchstart', onPointerActivity, { passive: true });
+    el.addEventListener('touchmove', onPointerActivity, { passive: true });
+    el.addEventListener('mousemove', onPointerActivity, { passive: true });
+    el.addEventListener('mouseenter', onPointerActivity, { passive: true });
+
+    return () => {
+      el.removeEventListener('pointerenter', onPointerActivity);
+      el.removeEventListener('pointermove', onPointerActivity);
+      el.removeEventListener('pointerdown', onPointerActivity);
+      el.removeEventListener('touchstart', onPointerActivity);
+      el.removeEventListener('touchmove', onPointerActivity);
+      el.removeEventListener('mousemove', onPointerActivity);
+      el.removeEventListener('mouseenter', onPointerActivity);
+    };
+  }, [showControlsInstantly, scheduleHideControls]);
 
   // Mobile portrait bottom sheet & Tablet portrait split height (Sections 20 & 21)
   const [mobileBottomSheetOpen, setMobileBottomSheetOpen] = useState<boolean>(false);
@@ -151,17 +370,96 @@ export const HallView: React.FC = () => {
   const [showEndHallConfirm, setShowEndHallConfirm] = useState<boolean>(false);
   const [showChangeMovieMenu, setShowChangeMovieMenu] = useState<boolean>(false);
   const [showSharePrivacyModal, setShowSharePrivacyModal] = useState<boolean>(false);
+  const [showIntervalBreakModal, setShowIntervalBreakModal] = useState<boolean>(false);
+  const [selectedBreakSec, setSelectedBreakSec] = useState<number>(180); // Default 3 mins
+  const [breakMessage, setBreakMessage] = useState<string>('Popcorn & Rest Break 🍿');
+  const [breakRemainingSec, setBreakRemainingSec] = useState<number>(0);
   const [chatInput, setChatInput] = useState<string>('');
+
+  // Device Camera states (Section 26: Camera View in Chat Box & Live Device Feed)
   const [localCamStream, setLocalCamStream] = useState<MediaStream | null>(null);
+  const [camFacingMode, setCamFacingMode] = useState<'user' | 'environment'>('user');
+  const [isCameraMirrored, setIsCameraMirrored] = useState<boolean>(true);
+  const [isUsingSimulatedCam, setIsUsingSimulatedCam] = useState<boolean>(false);
+  const [camPermissionStatus, setCamPermissionStatus] = useState<
+    'idle' | 'requesting' | 'granted' | 'denied'
+  >('idle');
+  const chatCamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const simCleanupRef = useRef<(() => void) | null>(null);
+
+  const requestDeviceCameraPermission = useCallback(async () => {
+    setCamPermissionStatus('requesting');
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('getUserMedia not supported in this browser');
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: camFacingMode,
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
+      });
+      if (simCleanupRef.current) {
+        simCleanupRef.current();
+        simCleanupRef.current = null;
+      }
+      setIsUsingSimulatedCam(false);
+      setLocalCamStream(stream);
+      setCamPermissionStatus('granted');
+      return true;
+    } catch (err) {
+      console.warn('Device camera permission denied or unavailable:', err);
+      setCamPermissionStatus('denied');
+      return false;
+    }
+  }, [camFacingMode]);
+
+  const setChatCamVideoRef = useCallback(
+    (el: HTMLVideoElement | null) => {
+      chatCamVideoRef.current = el;
+      if (el && localCamStream && el.srcObject !== localCamStream) {
+        el.srcObject = localCamStream;
+        el.play().catch(() => {});
+      }
+    },
+    [localCamStream]
+  );
 
   useEffect(() => {
-    if (showChangeMovieMenu || showSharePrivacyModal || showEndHallConfirm) {
+    if (showChangeMovieMenu || showSharePrivacyModal || showEndHallConfirm || showIntervalBreakModal) {
       setAreControlsVisible(true);
       if (controlsTimeoutRef.current) {
         clearTimeout(controlsTimeoutRef.current);
       }
     }
-  }, [showChangeMovieMenu, showSharePrivacyModal, showEndHallConfirm]);
+  }, [showChangeMovieMenu, showSharePrivacyModal, showEndHallConfirm, showIntervalBreakModal]);
+
+  // Interval Break countdown timer & auto-play when timer finishes
+  useEffect(() => {
+    if (!activeHall?.breakState?.isActive || !activeHall.breakState.endsAt) {
+      setBreakRemainingSec(0);
+      return;
+    }
+
+    const checkTimer = () => {
+      const now = Date.now();
+      const diffMs = activeHall.breakState!.endsAt - now;
+      const sec = Math.max(0, Math.ceil(diffMs / 1000));
+      setBreakRemainingSec(sec);
+      if (diffMs <= 0) {
+        // Break timer reached 0: automatically resume / play movie!
+        if (isCurrentUserHost) {
+          hostEndIntervalBreak(true);
+        }
+      }
+    };
+
+    checkTimer();
+    const interval = setInterval(checkTimer, 500);
+    return () => clearInterval(interval);
+  }, [activeHall?.breakState?.isActive, activeHall?.breakState?.endsAt, isCurrentUserHost, hostEndIntervalBreak]);
 
   const myHallMember = hallMembers.find((m) => m.userId === currentUser.id);
   const pendingRequests = joinRequests.filter((r) => r.status === 'PENDING');
@@ -169,6 +467,7 @@ export const HallView: React.FC = () => {
   const activeHallLibraryItem = activeHall?.libraryItemId
     ? libraryItems.find((i) => i.id === activeHall.libraryItemId)
     : undefined;
+
   const youTubeVideoId =
     activeHall && !activeScreenStream
       ? resolveYouTubeVideoId({
@@ -198,6 +497,7 @@ export const HallView: React.FC = () => {
 
     let hls: Hls | null = null;
     setUsedProxyStream(false);
+
     if (streamUrl.toLowerCase().includes('.m3u8') && Hls.isSupported()) {
       hls = new Hls();
       hls.loadSource(streamUrl);
@@ -237,7 +537,9 @@ export const HallView: React.FC = () => {
     if (!activeHall || youTubeVideoId) return;
     const video = videoRef.current;
     if (!video || activeScreenStream) return;
+
     video.playbackRate = activeHall.playbackSpeed || 1;
+
     if (activeHall.isPlaying && video.paused) {
       video.play().catch(() => {});
     } else if (!activeHall.isPlaying && !video.paused) {
@@ -245,41 +547,272 @@ export const HallView: React.FC = () => {
     }
   }, [activeHall?.isPlaying, activeHall?.playbackSpeed, activeScreenStream, youTubeVideoId]);
 
-  // Sync local camera preview when participant enables camera (Section 26)
+  // Live position sync for Viewers whenever Host seeks, skips (-10s/+10s), or sends heartbeat
+  useEffect(() => {
+    if (!activeHall || isCurrentUserHost || youTubeVideoId || activeScreenStream) return;
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+
+    const targetSec = Math.max(
+      0,
+      Math.min(video.duration, (activeHall.positionMs || 0) / 1000)
+    );
+    if (Math.abs(video.currentTime - targetSec) > 2.0) {
+      video.currentTime = targetSec;
+    }
+  }, [activeHall?.positionMs, isCurrentUserHost, youTubeVideoId, activeScreenStream]);
+
+  // Host live video presentation frame broadcaster (streams live video feed from Host's player to all joined team members)
+  useEffect(() => {
+    if (!activeHall || !isCurrentUserHost || youTubeVideoId) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 360;
+    const ctx = canvas.getContext('2d');
+
+    const interval = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v || !ctx || v.readyState < 2) return;
+      try {
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        const frameDataUrl = canvas.toDataURL('image/jpeg', 0.6);
+        const curMs = Math.round((v.currentTime || 0) * 1000);
+        broadcastPresentationFrame(frameDataUrl, curMs, !v.paused);
+      } catch {
+        // Cross-origin video without CORS headers will still sync via direct videoUrl & positionMs heartbeat
+      }
+    }, 260);
+
+    return () => clearInterval(interval);
+  }, [activeHall?.id, isCurrentUserHost, youTubeVideoId, broadcastPresentationFrame]);
+
+  // Synchronize localCamStream to all mounted video elements (chat box camera and sidebar grid)
+  useEffect(() => {
+    if (localCamStream) {
+      if (chatCamVideoRef.current && chatCamVideoRef.current.srcObject !== localCamStream) {
+        chatCamVideoRef.current.srcObject = localCamStream;
+        chatCamVideoRef.current.play().catch(() => {});
+      }
+      if (localCamVideoRef.current && localCamVideoRef.current.srcObject !== localCamStream) {
+        localCamVideoRef.current.srcObject = localCamStream;
+        localCamVideoRef.current.play().catch(() => {});
+      }
+    }
+  }, [localCamStream]);
+
+  // Broadcast live camera frames from user's device to all other Hall members when cameraEnabled is true
+  useEffect(() => {
+    if (!myHallMember?.cameraEnabled || !localCamStream) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext('2d');
+
+    const interval = window.setInterval(() => {
+      const camVideo = chatCamVideoRef.current || localCamVideoRef.current;
+      if (!camVideo || !ctx || camVideo.readyState < 2) return;
+      try {
+        ctx.drawImage(camVideo, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.55);
+        broadcastMemberCameraFrame(dataUrl);
+      } catch {
+        // ignore
+      }
+    }, 220);
+
+    return () => clearInterval(interval);
+  }, [myHallMember?.cameraEnabled, localCamStream, broadcastMemberCameraFrame]);
+
+  // Live Device Microphone capture, voice level detection, and live audio streaming when user enables their Mic
   useEffect(() => {
     let active = true;
-    if (myHallMember?.cameraEnabled) {
+    let audioCtx: AudioContext | null = null;
+    let levelInterval: number | null = null;
+    let recorderInterval: number | null = null;
+    let activeStream: MediaStream | null = null;
+
+    if (myHallMember?.micEnabled) {
       navigator.mediaDevices
-        ?.getUserMedia({ video: true, audio: false })
+        ?.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        })
         .then((stream) => {
           if (!active) {
             stream.getTracks().forEach((t) => t.stop());
             return;
           }
-          setLocalCamStream(stream);
-          if (localCamVideoRef.current) {
-            localCamVideoRef.current.srcObject = stream;
+          activeStream = stream;
+          setLocalMicStream(stream);
+
+          try {
+            const AudioContextClass =
+              window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+            audioCtx = new AudioContextClass();
+            const source = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            levelInterval = window.setInterval(() => {
+              analyser.getByteFrequencyData(dataArray);
+              let sum = 0;
+              for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+              }
+              const avg = sum / dataArray.length;
+              const normalized = Math.min(100, Math.round((avg / 90) * 100));
+              setLocalMicLevel(normalized);
+              updateLocalSpeakingState(normalized > 12);
+            }, 180);
+          } catch {
+            // fallback if AudioContext restricted
+          }
+
+          // Stream short live voice audio chunks over WebSocket when MediaRecorder is available
+          if (typeof MediaRecorder !== 'undefined') {
+            const recordSlice = () => {
+              if (!active || !activeStream || !activeStream.active) return;
+              try {
+                const recorder = new MediaRecorder(activeStream);
+                const chunks: BlobPart[] = [];
+                recorder.ondataavailable = (e) => {
+                  if (e.data && e.data.size > 0) chunks.push(e.data);
+                };
+                recorder.onstop = () => {
+                  if (!active || chunks.length === 0) return;
+                  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+                  const reader = new FileReader();
+                  reader.onloadend = () => {
+                    if (typeof reader.result === 'string') {
+                      broadcastVoiceChunk(reader.result);
+                    }
+                  };
+                  reader.readAsDataURL(blob);
+                };
+                recorder.start();
+                setTimeout(() => {
+                  if (recorder.state === 'recording') {
+                    recorder.stop();
+                  }
+                }, 450);
+              } catch {
+                // ignore if codec unsupported
+              }
+            };
+            recorderInterval = window.setInterval(recordSlice, 500);
           }
         })
-        .catch(() => {
-          // Camera hardware unavailable in sandbox; tile shows live indicator fallback
+        .catch((err) => {
+          console.warn('Device microphone access denied or unavailable:', err);
+          if (!active) return;
+          setLocalMicLevel(0);
         });
     } else {
+      if (localMicStream) {
+        localMicStream.getTracks().forEach((t) => t.stop());
+        setLocalMicStream(null);
+      }
+      setLocalMicLevel(0);
+    }
+
+    return () => {
+      active = false;
+      if (levelInterval) clearInterval(levelInterval);
+      if (recorderInterval) clearInterval(recorderInterval);
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+      }
+      if (activeStream) {
+        activeStream.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, [myHallMember?.micEnabled, broadcastVoiceChunk, updateLocalSpeakingState]);
+
+  // Play incoming live voice audio chunks from other Hall members at the user's selected voiceVolume
+  useEffect(() => {
+    if (!latestVoiceChunk || !latestVoiceChunk.audioDataUrl || voiceVolume <= 0) return;
+    try {
+      const audio = new Audio(latestVoiceChunk.audioDataUrl);
+      audio.volume = Math.max(0, Math.min(1, voiceVolume));
+      audio.play().catch(() => {});
+    } catch {
+      // ignore
+    }
+  }, [latestVoiceChunk, voiceVolume]);
+
+  // Sync device camera preview when participant enables camera
+  useEffect(() => {
+    let active = true;
+
+    if (myHallMember?.cameraEnabled) {
+      if (simCleanupRef.current) {
+        simCleanupRef.current();
+        simCleanupRef.current = null;
+      }
+      setCamPermissionStatus('requesting');
+
+      navigator.mediaDevices
+        ?.getUserMedia({
+          video: {
+            facingMode: camFacingMode,
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+          audio: false,
+        })
+        .then((stream) => {
+          if (!active) {
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+          }
+          setIsUsingSimulatedCam(false);
+          setLocalCamStream(stream);
+          setCamPermissionStatus('granted');
+        })
+        .catch((err) => {
+          console.warn('Device camera access denied or restricted:', err);
+          if (!active) return;
+          setCamPermissionStatus('denied');
+          setIsUsingSimulatedCam(true);
+          const simStream = createSimulatedCamStream(currentUser.displayName, () => {});
+          setLocalCamStream(simStream);
+          simCleanupRef.current = () => {
+            simStream.getTracks().forEach((t) => t.stop());
+          };
+        });
+    } else {
+      if (simCleanupRef.current) {
+        simCleanupRef.current();
+        simCleanupRef.current = null;
+      }
       if (localCamStream) {
         localCamStream.getTracks().forEach((t) => t.stop());
         setLocalCamStream(null);
       }
+      setCamPermissionStatus('idle');
+      setIsUsingSimulatedCam(false);
     }
+
     return () => {
       active = false;
+      if (simCleanupRef.current) {
+        simCleanupRef.current();
+        simCleanupRef.current = null;
+      }
     };
-  }, [myHallMember?.cameraEnabled]);
+  }, [myHallMember?.cameraEnabled, camFacingMode, currentUser.displayName]);
 
   // Sidebar drag-resizing listeners (Mouse + Touch)
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizingRef.current) return;
-      const deltaX = startXRef.current - e.clientX; // Moving left widens sidebar, moving right widens video
+      const deltaX = startXRef.current - e.clientX;
       const nextWidth = Math.max(140, Math.min(560, startWidthRef.current + deltaX));
       setSidebarWidth(nextWidth);
     };
@@ -324,16 +857,19 @@ export const HallView: React.FC = () => {
 
   if (!activeHall) return null;
 
-  const handleToggleFullscreen = async () => {
-    if (!hallContainerRef.current) return;
+  const handleToggleFullscreen = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const targetElement = videoAreaRef.current || hallContainerRef.current;
+    if (!targetElement) return;
+
     try {
-      if (!document.fullscreenElement) {
-        await hallContainerRef.current.requestFullscreen();
+      if (isFullscreenActive()) {
+        await exitFullscreenLandscape();
+        setIsFullscreen(false);
+      } else {
+        await enterFullscreenLandscape(targetElement);
         setIsFullscreen(true);
         setForceLandscapeLayout(true);
-      } else {
-        await document.exitFullscreen();
-        setIsFullscreen(false);
       }
     } catch {
       setIsFullscreen((prev) => !prev);
@@ -394,9 +930,9 @@ export const HallView: React.FC = () => {
             <button
               onClick={() => {
                 if (sidebarWidth >= 320) {
-                  setSidebarWidth(175); // Reset to default 175px
+                  setSidebarWidth(175);
                 } else {
-                  setSidebarWidth(380); // Expand sidebar for wider chat
+                  setSidebarWidth(380);
                 }
               }}
               className="p-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white transition-colors"
@@ -453,7 +989,7 @@ export const HallView: React.FC = () => {
                   onClick={() => respondToJoinRequest(req.id, 'ACCEPTED')}
                   className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-[11px] font-semibold text-white flex items-center gap-1"
                 >
-                  <Check className="w-3 h-3" />
+                  <Check className="w-3.5 h-3.5" />
                   <span>ACCEPT</span>
                 </button>
               </div>
@@ -462,144 +998,373 @@ export const HallView: React.FC = () => {
         </div>
       )}
 
-      {/* TOP SECTION OF SPLIT OR FULL CAMERAS VIEW (Section 18 & 26) */}
-      {(sidePanelMode === 'SPLIT' || sidePanelMode === 'CAMERAS') && (
-        <div
-          className={`${
-            sidePanelMode === 'CAMERAS'
-              ? 'flex-1 overflow-y-auto'
-              : camerasCollapsed
-              ? 'shrink-0 border-b border-zinc-800/90'
-              : 'shrink-0 border-b border-zinc-800/90'
-          } p-2 sm:p-2.5 flex flex-col gap-2`}
-        >
-          <div className="flex items-center justify-between text-[11px] text-zinc-400">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="font-semibold text-zinc-300 truncate">
-                Cameras ({hallMembers.length})
-              </span>
-              {sidePanelMode === 'SPLIT' && (
-                <button
-                  type="button"
-                  onClick={() => setCamerasCollapsed((prev) => !prev)}
-                  className="px-1.5 py-0.5 rounded text-[10px] font-medium text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 transition-colors shrink-0"
-                  title={camerasCollapsed ? 'Show cameras box view' : 'Collapse cameras to maximize chat height'}
-                >
-                  {camerasCollapsed ? 'Show' : 'Hide / Max Chat'}
-                </button>
-              )}
-            </div>
-
-            <div className="flex items-center gap-1 shrink-0">
-              {/* Voice route switcher */}
+      {/* CAMERAS FULL GALLERY VIEW (When CAMERAS tab is selected) */}
+      {sidePanelMode === 'CAMERAS' && (
+        <div className="flex-1 flex flex-col min-h-0 p-2 sm:p-2.5 gap-2 overflow-y-auto">
+          <div className="flex items-center justify-between text-[11px] text-zinc-400 shrink-0">
+            <span className="font-semibold text-zinc-300">
+              Camera Grid ({hallMembers.length})
+            </span>
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => {
-                  const routes: ('SPEAKER' | 'BLUETOOTH' | 'HEADPHONES')[] = [
-                    'SPEAKER',
-                    'BLUETOOTH',
-                    'HEADPHONES',
-                  ];
-                  setAudioOutputRoute(
-                    routes[(routes.indexOf(audioOutputRoute) + 1) % routes.length]
-                  );
-                }}
-                className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 flex items-center gap-1 border border-zinc-800"
-                title="Switch Voice Audio Output (Speaker / Bluetooth)"
+                onClick={toggleLocalCamera}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 ${
+                  myHallMember?.cameraEnabled
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-zinc-800 text-zinc-300 hover:text-white'
+                }`}
               >
-                {audioOutputRoute === 'BLUETOOTH' ? (
-                  <Bluetooth className="w-3 h-3 text-sky-400" />
-                ) : audioOutputRoute === 'HEADPHONES' ? (
-                  <Headphones className="w-3 h-3 text-emerald-400" />
+                {myHallMember?.cameraEnabled ? (
+                  <>
+                    <Camera className="w-3 h-3 text-emerald-400" />
+                    <span>My Cam On</span>
+                  </>
                 ) : (
-                  <Speaker className="w-3 h-3 text-rose-400" />
+                  <>
+                    <CameraOff className="w-3 h-3 text-zinc-400" />
+                    <span>My Cam Off</span>
+                  </>
                 )}
-                <span className="hidden lg:inline text-[10px]">{audioOutputRoute}</span>
               </button>
             </div>
           </div>
 
-          {/* BOX VIEW: Camera participant tiles in 1-column responsive box grid (aspect-[4/3]) */}
-          {!camerasCollapsed && (
-            <div
-              className={`grid grid-cols-1 gap-2.5 ${
-                sidePanelMode === 'CAMERAS'
-                  ? 'flex-1 min-h-0 overflow-y-auto'
-                  : 'max-h-[260px] overflow-y-auto'
-              } pr-0.5 scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent`}
-            >
-              {hallMembers.map((member) => {
-                const isMe = member.userId === currentUser.id;
-                return (
-                  <div
-                    key={member.id}
-                    className={`relative rounded-xl bg-zinc-900 border overflow-hidden flex flex-col items-center justify-center p-2 aspect-[4/3] w-full transition-colors ${
-                      member.isSpeaking
-                        ? 'border-emerald-500/80 shadow-xs shadow-emerald-500/20 ring-1 ring-emerald-500/50'
-                        : 'border-zinc-800 hover:border-zinc-700'
-                    }`}
-                  >
-                    {isMe && member.cameraEnabled && localCamStream ? (
-                      <video
-                        ref={localCamVideoRef}
-                        autoPlay
-                        muted
-                        playsInline
-                        className="absolute inset-0 w-full h-full object-cover"
-                      />
-                    ) : member.cameraEnabled ? (
-                      <div className="absolute inset-0 bg-gradient-to-br from-zinc-800 via-zinc-900 to-black flex items-center justify-center">
-                        <div className="w-10 h-10 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-sm font-bold text-rose-200 shadow-inner">
-                          {member.displayName.slice(0, 2).toUpperCase()}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-sm font-semibold text-zinc-200">
+          <div className="grid grid-cols-1 gap-2.5 flex-1 min-h-0 overflow-y-auto pr-0.5 scrollbar-thin scrollbar-thumb-zinc-700">
+            {hallMembers.map((member) => {
+              const isMe = member.userId === currentUser.id;
+              return (
+                <div
+                  key={member.id}
+                  className={`relative rounded-xl bg-zinc-900 border overflow-hidden flex flex-col items-center justify-center p-2 aspect-[4/3] w-full transition-colors ${
+                    member.isSpeaking
+                      ? 'border-emerald-500/80 shadow-xs shadow-emerald-500/20 ring-1 ring-emerald-500/50'
+                      : 'border-zinc-800 hover:border-zinc-700'
+                  }`}
+                >
+                  {isMe && member.cameraEnabled && localCamStream ? (
+                    <video
+                      ref={(el) => {
+                        localCamVideoRef.current = el;
+                        if (el && localCamStream && el.srcObject !== localCamStream) {
+                          el.srcObject = localCamStream;
+                          el.play().catch(() => {});
+                        }
+                      }}
+                      autoPlay
+                      muted
+                      playsInline
+                      className={`absolute inset-0 w-full h-full object-cover ${
+                        isCameraMirrored ? 'scale-x-[-1]' : ''
+                      }`}
+                    />
+                  ) : !isMe && member.cameraEnabled && remoteMemberCamFrames[member.userId] ? (
+                    <img
+                      src={remoteMemberCamFrames[member.userId]}
+                      alt={`${member.displayName} live camera`}
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  ) : member.cameraEnabled ? (
+                    <div className="absolute inset-0 bg-gradient-to-br from-zinc-800 via-zinc-900 to-black flex flex-col items-center justify-center gap-1">
+                      <div className="w-10 h-10 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-sm font-bold text-rose-200 shadow-inner">
                         {member.displayName.slice(0, 2).toUpperCase()}
                       </div>
-                    )}
-
-                    <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between text-[10px] bg-black/80 backdrop-blur-xs px-1.5 py-0.5 rounded-md border border-white/5">
-                      <span className="text-zinc-100 font-medium truncate max-w-[105px]">
-                        {member.displayName} {member.role === 'HOST' ? '(Host)' : ''}
+                      <span className="text-[9px] text-emerald-400 font-medium animate-pulse">
+                        Connecting live cam...
                       </span>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {member.micEnabled ? (
-                          <Mic className="w-3 h-3 text-emerald-400" />
-                        ) : (
-                          <MicOff className="w-3 h-3 text-zinc-500" />
-                        )}
-                      </div>
+                    </div>
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-sm font-semibold text-zinc-200">
+                      {member.displayName.slice(0, 2).toUpperCase()}
+                    </div>
+                  )}
+
+                  <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between text-[10px] bg-black/80 backdrop-blur-xs px-1.5 py-0.5 rounded-md border border-white/5">
+                    <span className="text-zinc-100 font-medium truncate max-w-[105px]">
+                      {member.displayName} {member.role === 'HOST' ? '(Host)' : ''}{' '}
+                      {isMe ? '(You)' : ''}
+                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isMe ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={toggleLocalMic}
+                            className="p-0.5 rounded hover:bg-zinc-700"
+                            title={member.micEnabled ? 'Disable My Mic' : 'Enable My Mic'}
+                          >
+                            {member.micEnabled ? (
+                              <Mic className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <MicOff className="w-3 h-3 text-zinc-500" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={toggleLocalCamera}
+                            className="p-0.5 rounded hover:bg-zinc-700"
+                            title={member.cameraEnabled ? 'Disable My Camera' : 'Enable My Camera'}
+                          >
+                            {member.cameraEnabled ? (
+                              <Camera className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <CameraOff className="w-3 h-3 text-zinc-500" />
+                            )}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {member.micEnabled ? (
+                            <Mic className="w-3 h-3 text-emerald-400" />
+                          ) : (
+                            <MicOff className="w-3 h-3 text-zinc-500" />
+                          )}
+                          {member.cameraEnabled ? (
+                            <Camera className="w-3 h-3 text-emerald-400" />
+                          ) : (
+                            <CameraOff className="w-3 h-3 text-zinc-500" />
+                          )}
+                        </>
+                      )}
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              );
+            })}
+          </div>
 
-          {sidePanelMode === 'CAMERAS' && (
-            <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1.5 mt-auto">
-              <div className="flex items-center justify-between text-xs text-zinc-300">
-                <span>VOICE VOLUME (Separate from Movie)</span>
-                <span className="font-mono-tabular">{Math.round(voiceVolume * 100)}%</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={voiceVolume}
-                onChange={(e) => setVoiceVolume(Number(e.target.value))}
-                className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-              />
+          <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1.5 mt-auto shrink-0">
+            <div className="flex items-center justify-between text-xs text-zinc-300">
+              <span>VOICE VOLUME (Separate from Movie)</span>
+              <span className="font-mono-tabular">{Math.round(voiceVolume * 100)}%</span>
             </div>
-          )}
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={voiceVolume}
+              onChange={(e) => setVoiceVolume(Number(e.target.value))}
+              className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+            />
+          </div>
         </div>
       )}
 
-      {/* CHAT SECTION (Shown in SPLIT and CHAT modes — Section 18 & 25) */}
+      {/* CHAT BOX (Shown in SPLIT and CHAT modes · 1-Column Responsive Box Grid aspect-[4/3]) */}
       {(sidePanelMode === 'SPLIT' || sidePanelMode === 'CHAT') && (
-        <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {/* CAMERA VIEW IN CHAT BOX: 1-Column responsive box grid (aspect-[4/3]) */}
+          <div className="border-b border-zinc-800/90 bg-zinc-950/60 p-2 sm:p-2.5 flex flex-col gap-2 shrink-0">
+            {/* Camera View Header inside Chat Box */}
+            <div className="flex items-center justify-between text-[11px] text-zinc-400">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                  <Camera className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Live Cameras</span>
+                </span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-zinc-800 text-zinc-300">
+                  {hallMembers.filter((m) => m.cameraEnabled).length} Active
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                {/* Quick Toggle Device Camera Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    toggleLocalCamera();
+                    if (!myHallMember?.cameraEnabled) {
+                      setCamerasCollapsed(false);
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 transition-colors ${
+                    myHallMember?.cameraEnabled
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800'
+                  }`}
+                  title={myHallMember?.cameraEnabled ? 'Turn Camera Off' : 'Turn Device Camera On'}
+                >
+                  {myHallMember?.cameraEnabled ? (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      <span>Cam On</span>
+                    </>
+                  ) : (
+                    <>
+                      <CameraOff className="w-3 h-3 text-zinc-400" />
+                      <span>Cam Off</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Switch Voice Route */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const routes: ('SPEAKER' | 'BLUETOOTH' | 'HEADPHONES')[] = [
+                      'SPEAKER',
+                      'BLUETOOTH',
+                      'HEADPHONES',
+                    ];
+                    setAudioOutputRoute(
+                      routes[(routes.indexOf(audioOutputRoute) + 1) % routes.length]
+                    );
+                  }}
+                  className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800"
+                  title="Switch Voice Audio Output (Speaker / Bluetooth / Headphones)"
+                >
+                  {audioOutputRoute === 'BLUETOOTH' ? (
+                    <Bluetooth className="w-3 h-3 text-sky-400" />
+                  ) : audioOutputRoute === 'HEADPHONES' ? (
+                    <Headphones className="w-3 h-3 text-emerald-400" />
+                  ) : (
+                    <Speaker className="w-3 h-3 text-rose-400" />
+                  )}
+                </button>
+
+                {/* Collapse / Expand Camera View inside Chat Box */}
+                <button
+                  type="button"
+                  onClick={() => setCamerasCollapsed((prev) => !prev)}
+                  className="p-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 transition-colors"
+                  title={camerasCollapsed ? 'Expand camera view in chat' : 'Collapse camera view for larger chat'}
+                >
+                  {camerasCollapsed ? (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Expanded Camera View in Chat Box: 1-Column Responsive Box Grid (aspect-[4/3]) */}
+            {!camerasCollapsed && (
+              <div className="grid grid-cols-1 gap-2.5 max-h-[260px] overflow-y-auto pr-0.5 scrollbar-thin scrollbar-thumb-zinc-700">
+                {hallMembers.map((member) => {
+                  const isMe = member.userId === currentUser.id;
+                  return (
+                    <div
+                      key={member.id}
+                      className={`relative rounded-xl bg-zinc-900 border overflow-hidden flex flex-col items-center justify-center p-2 aspect-[4/3] w-full transition-colors ${
+                        member.isSpeaking
+                          ? 'border-emerald-500/80 shadow-xs shadow-emerald-500/20 ring-1 ring-emerald-500/50'
+                          : 'border-zinc-800 hover:border-zinc-700'
+                      }`}
+                    >
+                      {isMe && member.cameraEnabled && localCamStream ? (
+                        <video
+                          ref={setChatCamVideoRef}
+                          autoPlay
+                          muted
+                          playsInline
+                          className={`absolute inset-0 w-full h-full object-cover ${
+                            isCameraMirrored ? 'scale-x-[-1]' : ''
+                          }`}
+                        />
+                      ) : !isMe && member.cameraEnabled && remoteMemberCamFrames[member.userId] ? (
+                        <img
+                          src={remoteMemberCamFrames[member.userId]}
+                          alt={`${member.displayName} live camera`}
+                          className="absolute inset-0 w-full h-full object-cover"
+                        />
+                      ) : member.cameraEnabled ? (
+                        <div className="absolute inset-0 bg-gradient-to-br from-zinc-800 via-zinc-900 to-black flex flex-col items-center justify-center gap-1">
+                          <div className="w-10 h-10 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-sm font-bold text-rose-200 shadow-inner">
+                            {member.displayName.slice(0, 2).toUpperCase()}
+                          </div>
+                          <span className="text-[9px] text-emerald-400 font-medium animate-pulse">
+                            Connecting live cam...
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-sm font-semibold text-zinc-200">
+                          {member.displayName.slice(0, 2).toUpperCase()}
+                        </div>
+                      )}
+
+                      {/* Mirror, Rotate, and Mic Controls on Local Camera */}
+                      {isMe && member.cameraEnabled && (
+                        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 bg-black/75 backdrop-blur-xs p-0.5 rounded-lg border border-white/10 z-10">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCamFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'))
+                            }
+                            className="p-1 rounded hover:bg-zinc-800 text-zinc-300 hover:text-white"
+                            title="Flip Front / Back Camera"
+                          >
+                            <RotateCw className="w-2.5 h-2.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsCameraMirrored((prev) => !prev)}
+                            className="p-1 rounded hover:bg-zinc-800 text-zinc-300 hover:text-white"
+                            title="Mirror Camera"
+                          >
+                            <FlipHorizontal className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="absolute bottom-1 left-1 right-1 flex items-center justify-between text-[10px] bg-black/80 backdrop-blur-xs px-1.5 py-0.5 rounded-md border border-white/5">
+                        <span className="text-zinc-100 font-medium truncate max-w-[105px]">
+                          {member.displayName} {member.role === 'HOST' ? '(Host)' : ''}{' '}
+                          {isMe ? '(You)' : ''}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {isMe ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={toggleLocalMic}
+                                className="p-0.5 rounded hover:bg-zinc-700"
+                                title={member.micEnabled ? 'Disable My Mic' : 'Enable My Mic'}
+                              >
+                                {member.micEnabled ? (
+                                  <Mic className="w-3 h-3 text-emerald-400" />
+                                ) : (
+                                  <MicOff className="w-3 h-3 text-zinc-500" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={toggleLocalCamera}
+                                className="p-0.5 rounded hover:bg-zinc-700"
+                                title={member.cameraEnabled ? 'Disable My Camera' : 'Enable My Camera'}
+                              >
+                                {member.cameraEnabled ? (
+                                  <Camera className="w-3 h-3 text-emerald-400" />
+                                ) : (
+                                  <CameraOff className="w-3 h-3 text-zinc-500" />
+                                )}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {member.micEnabled ? (
+                                <Mic className="w-3 h-3 text-emerald-400" />
+                              ) : (
+                                <MicOff className="w-3 h-3 text-zinc-500" />
+                              )}
+                              {member.cameraEnabled ? (
+                                <Camera className="w-3 h-3 text-emerald-400" />
+                              ) : (
+                                <CameraOff className="w-3 h-3 text-zinc-500" />
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* CHAT MESSAGES SCROLL AREA */}
           <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
             {hallMessages.map((msg) => {
               const isOwn = msg.senderId === currentUser.id;
@@ -677,6 +1442,7 @@ export const HallView: React.FC = () => {
                 </button>
               ))}
             </div>
+
             <form onSubmit={handleSendChat} className="flex items-center gap-2">
               <input
                 type="text"
@@ -706,6 +1472,7 @@ export const HallView: React.FC = () => {
             </div>
             <span className="text-[11px] text-zinc-500">Realtime Events</span>
           </div>
+
           {hallActivities.map((act) => (
             <div
               key={act.id}
@@ -735,7 +1502,6 @@ export const HallView: React.FC = () => {
       {/* PEOPLE / JOIN REQUESTS MODE (Section 14 & 15) */}
       {sidePanelMode === 'PEOPLE' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4">
-          {/* Volume Mixer (Section 27: Separate local controls for MOVIE VOLUME & VOICE VOLUME) */}
           <div className="p-3.5 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-3">
             <div className="text-xs font-semibold text-zinc-200">Local Audio Mixer</div>
             <div className="space-y-1">
@@ -757,11 +1523,12 @@ export const HallView: React.FC = () => {
                     videoRef.current.volume = v;
                     videoRef.current.muted = v === 0;
                   }
+                  ytPlayerRef.current?.setVolume(v);
+                  ytPlayerRef.current?.setMuted(v === 0);
                 }}
                 className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
               />
             </div>
-
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px] text-zinc-400">
                 <span>VOICE VOLUME</span>
@@ -786,29 +1553,74 @@ export const HallView: React.FC = () => {
               </span>
             </div>
 
-            {hallMembers.map((m) => (
-              <div
-                key={m.id}
-                className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/70 border border-zinc-800/80 text-xs"
-              >
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center font-semibold text-zinc-200">
-                    {m.displayName.slice(0, 2).toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-zinc-100">
-                      {m.displayName}{' '}
-                      <span className="text-[11px] font-normal text-zinc-400">
-                        · {m.role}
-                      </span>
+            {hallMembers.map((m) => {
+              const isMe = m.userId === currentUser.id;
+              return (
+                <div
+                  key={m.id}
+                  className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/70 border border-zinc-800/80 text-xs"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center font-semibold text-zinc-200 shrink-0">
+                      {m.displayName.slice(0, 2).toUpperCase()}
                     </div>
-                    <div className="text-[11px] text-zinc-500">
-                      {m.micEnabled ? 'Mic On' : 'Muted'} · {m.cameraEnabled ? 'Cam On' : 'Cam Off'}
+                    <div className="min-w-0">
+                      <div className="font-semibold text-zinc-100 truncate">
+                        {m.displayName} {isMe ? '(You)' : ''}{' '}
+                        <span className="text-[11px] font-normal text-zinc-400">
+                          · {m.role}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-zinc-500">
+                        {m.micEnabled ? 'Mic On' : 'Muted'} · {m.cameraEnabled ? 'Cam On' : 'Cam Off'}
+                      </div>
                     </div>
                   </div>
+
+                  {isMe ? (
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={toggleLocalMic}
+                        className={`p-1.5 rounded-lg border transition-colors ${
+                          m.micEnabled
+                            ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                        title={m.micEnabled ? 'Disable My Mic' : 'Enable My Mic'}
+                      >
+                        {m.micEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={toggleLocalCamera}
+                        className={`p-1.5 rounded-lg border transition-colors ${
+                          m.cameraEnabled
+                            ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                        title={m.cameraEnabled ? 'Disable My Camera' : 'Enable My Camera'}
+                      >
+                        {m.cameraEnabled ? <Camera className="w-3.5 h-3.5" /> : <CameraOff className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 shrink-0 text-zinc-500">
+                      {m.micEnabled ? (
+                        <Mic className="w-3.5 h-3.5 text-emerald-400" />
+                      ) : (
+                        <MicOff className="w-3.5 h-3.5 text-zinc-600" />
+                      )}
+                      {m.cameraEnabled ? (
+                        <Camera className="w-3.5 h-3.5 text-emerald-400" />
+                      ) : (
+                        <CameraOff className="w-3.5 h-3.5 text-zinc-600" />
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -822,7 +1634,7 @@ export const HallView: React.FC = () => {
     >
       {/* SECTION 40: Persistent Foreground Service Notification Bar when Host Shares Another App/Screen */}
       {activeHall.shareType !== 'NONE' && (
-        <div className="bg-rose-950/90 border-b border-rose-500/40 px-4 py-2 flex items-center justify-between gap-3 text-xs shrink-0">
+        <div className="bg-rose-950/90 border-b border-rose-500/40 px-4 py-2 flex items-center justify-between gap-3 text-xs shrink-0 z-30">
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse shrink-0" />
             <span className="font-semibold text-zinc-100 truncate">
@@ -855,11 +1667,11 @@ export const HallView: React.FC = () => {
 
       {/* SECTION 37: Host Disconnect Grace Period Banner */}
       {!activeHall.hostConnected && (
-        <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 flex items-center justify-between text-xs text-amber-200 shrink-0">
+        <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 flex items-center justify-between text-xs text-amber-200 shrink-0 z-30">
           <div className="flex items-center gap-2">
             <WifiOff className="w-4 h-4 text-amber-400 animate-pulse" />
             <span className="font-semibold">
-              Host connection lost · Reconnecting... (Grace period active — Hall preserved)
+              Host connection lost · Reconnecting... (Grace period active · Hall preserved)
             </span>
           </div>
         </div>
@@ -871,10 +1683,14 @@ export const HallView: React.FC = () => {
           useSideBySideLandscape ? 'flex-row' : 'flex-col'
         } min-h-0 overflow-hidden relative`}
       >
-        {/* LEFT / TOP: MOVIE PRESENTATION SURFACE */}
+        {/* LEFT / TOP: MOVIE PRESENTATION SURFACE (Play video fits 100% of video preview area, controls & remote overlay on video) */}
         <div
+          ref={videoAreaRef}
           onMouseMove={handleVideoAreaActivity}
           onMouseEnter={handleVideoAreaActivity}
+          onPointerEnter={handleVideoAreaActivity}
+          onPointerMove={handleVideoAreaActivity}
+          onPointerDown={handleVideoAreaActivity}
           onTouchStart={handleVideoAreaActivity}
           onTouchMove={handleVideoAreaActivity}
           onClick={handleVideoAreaActivity}
@@ -889,20 +1705,268 @@ export const HallView: React.FC = () => {
               : isTabletPortrait
               ? 'w-full shrink-0'
               : 'w-full aspect-video sm:flex-1 min-w-0 min-h-0'
-          } relative bg-black flex flex-col justify-between overflow-hidden ${
+          } relative bg-black flex items-center justify-center overflow-hidden ${
             !areControlsVisible ? 'cursor-none' : 'cursor-default'
           }`}
         >
-          {/* Top Overlay inside Video Area */}
+          {/* Transparent Hover & Tap Capture Overlay: ensures instant reappearance on hover, mouse move, or tap anywhere across video */}
+          {!areControlsVisible && (
+            <div
+              onMouseEnter={handleVideoAreaActivity}
+              onMouseMove={handleVideoAreaActivity}
+              onPointerEnter={handleVideoAreaActivity}
+              onPointerMove={handleVideoAreaActivity}
+              onPointerDown={handleVideoAreaActivity}
+              onTouchStart={handleVideoAreaActivity}
+              onTouchMove={handleVideoAreaActivity}
+              onClick={handleVideoAreaActivity}
+              className="absolute inset-0 z-20 cursor-pointer pointer-events-auto"
+              title="Click or move mouse to show video controls and remote buttons"
+            />
+          )}
+
+          {/* VIDEO ELEMENT: FITS EXACTLY ON VIDEO PREVIEW/PLAY BOX AREA */}
+          <div className="absolute inset-0 w-full h-full flex items-center justify-center overflow-hidden bg-black z-0">
+            {youTubeVideoId ? (
+              <YouTubeVideoPlayer
+                ref={ytPlayerRef}
+                videoId={youTubeVideoId}
+                title={activeHall.title}
+                isPlaying={activeHall.isPlaying}
+                positionMs={activeHall.positionMs}
+                isViewerSync={!isCurrentUserHost}
+                playbackSpeed={activeHall.playbackSpeed || 1}
+                muted={movieMuted}
+                volume={movieVolume}
+                controlsVisible={areControlsVisible}
+                onToggleFullscreen={handleToggleFullscreen}
+                onTimeUpdate={(posMs: number, durMs: number) => {
+                  if (isCurrentUserHost) {
+                    hostUpdatePositionSilent(posMs, durMs > 0 ? durMs : undefined);
+                  }
+                }}
+                onDurationChange={(durMs: number) => {
+                  if (isCurrentUserHost && durMs > 0) {
+                    hostUpdatePositionSilent(activeHall.positionMs, durMs);
+                  }
+                }}
+                onPlayStateChange={(playing) => {
+                  if (!isCurrentUserHost) return;
+                  if (playing && !activeHall.isPlaying) {
+                    hostPlay();
+                  } else if (!playing && activeHall.isPlaying) {
+                    hostPause();
+                  }
+                }}
+                className="w-full h-full max-w-full max-h-full"
+              />
+            ) : (
+              <>
+                <video
+                  ref={videoRef}
+                  className="w-full h-full max-w-full max-h-full object-contain"
+                  playsInline
+                  onLoadedData={() => setViewerVideoReady(true)}
+                  onCanPlay={() => setViewerVideoReady(true)}
+                  onTimeUpdate={(e) => {
+                    if (!isCurrentUserHost) return;
+                    const v = e.currentTarget;
+                    if (v.duration > 0) {
+                      hostUpdatePositionSilent(
+                        Math.round(v.currentTime * 1000),
+                        Math.round(v.duration * 1000)
+                      );
+                    }
+                  }}
+                  onError={() => {
+                    setViewerVideoReady(false);
+                    const v = videoRef.current;
+                    if (
+                      v &&
+                      !usedProxyStream &&
+                      activeHall.videoUrl &&
+                      activeHall.videoUrl.startsWith('http')
+                    ) {
+                      setUsedProxyStream(true);
+                      v.src = `/api/video/stream?url=${encodeURIComponent(activeHall.videoUrl)}`;
+                      v.load();
+                      if (activeHall.isPlaying) {
+                        v.play().catch(() => {});
+                      }
+                    }
+                  }}
+                />
+                {!isCurrentUserHost &&
+                  latestPresentationFrame &&
+                  (activeHall.shareType === 'SCREEN_SHARE' ||
+                    activeHall.shareType === 'APP_SHARE' ||
+                    activeHall.videoUrl?.startsWith('blob:') ||
+                    !viewerVideoReady) && (
+                    <img
+                      src={latestPresentationFrame}
+                      alt={activeHall.title}
+                      className="absolute inset-0 w-full h-full max-w-full max-h-full object-contain pointer-events-none select-none z-10"
+                    />
+                  )}
+              </>
+            )}
+
+            {/* Dedicated Fullscreen Toggle Button directly on video player container */}
+            <button
+              type="button"
+              onClick={handleToggleFullscreen}
+              className={`absolute top-4 right-4 z-40 min-h-[42px] min-w-[42px] p-2.5 rounded-xl bg-black/75 hover:bg-black/95 text-white border border-white/20 shadow-2xl backdrop-blur-md transition-all active:scale-95 flex items-center justify-center ${
+                areControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+              }`}
+              title={isFullscreen ? 'Exit Fullscreen' : 'Expand Video to Full Screen'}
+            >
+              {isFullscreen ? <Minimize2 className="w-5 h-5 text-rose-400" /> : <Maximize2 className="w-5 h-5 text-white" />}
+            </button>
+
+            {subtitleTrack !== 'OFF' && (
+              <div className="absolute bottom-20 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-lg bg-black/80 text-zinc-100 text-xs sm:text-sm font-medium pointer-events-none z-20">
+                {subtitleTrack === 'EN'
+                  ? '[English CC] "Do not go gentle into that good night..."'
+                  : '[العربية] "لا تدخل في ذلك الليل الطويل بهدوء..."'}
+              </div>
+            )}
+
+            {/* SECTION 24: Floating Reactions Overlay directly on video */}
+            <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
+              {floatingReactions.map((r) => (
+                <div
+                  key={r.id}
+                  style={{ left: `${r.xOffsetPercent}%` }}
+                  className="absolute bottom-16 flex flex-col items-center animate-float-reaction"
+                >
+                  <span className="text-3xl sm:text-4xl drop-shadow-lg">{r.emoji}</span>
+                  <span className="text-[10px] font-semibold text-zinc-200 bg-black/70 px-2 py-0.5 rounded-md mt-0.5">
+                    {r.senderName}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* INTERMISSION BREAK OVERLAY (Synchronized movie pause + countdown timer) */}
+          {activeHall.breakState?.isActive && (
+            <div className="absolute inset-0 z-28 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center select-none animate-in fade-in duration-300">
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs sm:text-sm font-semibold mb-3 shadow-lg shadow-amber-950/40 animate-pulse">
+                <Coffee className="w-4 h-4 text-amber-400" />
+                <span>INTERVAL BREAK ACTIVE</span>
+              </div>
+
+              <h2 className="text-2xl sm:text-4xl md:text-5xl font-display font-bold text-white max-w-xl mb-2 drop-shadow-lg">
+                {activeHall.breakState.message || 'Popcorn & Rest Break 🍿'}
+              </h2>
+              <p className="text-xs sm:text-sm text-zinc-400 mb-6 flex items-center gap-1.5">
+                <span>Movie paused by <strong className="text-zinc-200">{activeHall.breakState.startedByName}</strong></span>
+                <span aria-hidden="true">·</span>
+                <span className="text-amber-300">Resumes automatically when timer finishes</span>
+              </p>
+
+              <div className="relative flex flex-col items-center justify-center mb-6">
+                <div className="text-6xl sm:text-8xl md:text-9xl font-mono-tabular font-extrabold text-transparent bg-clip-text bg-gradient-to-b from-white via-zinc-100 to-amber-200 tracking-wider drop-shadow-2xl">
+                  {Math.floor(breakRemainingSec / 60)
+                    .toString()
+                    .padStart(2, '0')}
+                  :
+                  {(breakRemainingSec % 60).toString().padStart(2, '0')}
+                </div>
+                <div className="flex items-center gap-2 mt-2 text-xs sm:text-sm text-amber-300/90 font-medium">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Auto-play ready · Grab your snacks!</span>
+                </div>
+              </div>
+
+              <div className="w-full max-w-md h-2 bg-zinc-800/80 rounded-full overflow-hidden mb-8 border border-white/10 shadow-inner">
+                <div
+                  className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-amber-400 transition-all duration-500 ease-linear"
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        (breakRemainingSec / Math.max(1, activeHall.breakState.totalDurationSec)) * 100
+                      )
+                    )}%`,
+                  }}
+                />
+              </div>
+
+              {isCurrentUserHost ? (
+                <div className="flex flex-wrap items-center justify-center gap-3 z-30">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextSec = breakRemainingSec + 60;
+                      hostStartIntervalBreak(nextSec, activeHall.breakState?.message);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shadow-md"
+                    title="Add 1 minute to break timer"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-amber-400" />
+                    <span>+1 MIN</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextSec = breakRemainingSec + 180;
+                      hostStartIntervalBreak(nextSec, activeHall.breakState?.message);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shadow-md"
+                    title="Add 3 minutes to break timer"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-amber-400" />
+                    <span>+3 MIN</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => hostEndIntervalBreak(true)}
+                    className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white flex items-center gap-2 transition-all shadow-lg shadow-rose-950/50 hover:scale-105 active:scale-95"
+                    title="Resume Movie Now (Auto-plays for all viewers)"
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                    <span>RESUME MOVIE NOW</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="text-xs text-zinc-400 font-mono bg-zinc-900/60 px-4 py-2 rounded-xl border border-zinc-800">
+                  The host or timer will resume the movie automatically.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* OVERLAY 1: TOP BAR OVERLAY ON VIDEO */}
           <div
-            className={`relative z-20 flex items-center justify-between gap-2 px-4 py-3 bg-gradient-to-b from-black/90 via-black/45 to-transparent transition-opacity duration-300 ease-in-out ${
-              areControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+            onMouseEnter={() => {
+              isHoveringControlsRef.current = true;
+              showControlsInstantly();
+            }}
+            onMouseLeave={() => {
+              isHoveringControlsRef.current = false;
+              scheduleHideControls(3000);
+            }}
+            onTouchStart={() => {
+              isHoveringControlsRef.current = false;
+              showControlsInstantly();
+              scheduleHideControls(3000);
+            }}
+            onClick={() => {
+              isHoveringControlsRef.current = false;
+              scheduleHideControls(3000);
+            }}
+            className={`absolute top-0 left-0 right-0 z-30 flex items-center justify-between gap-2 px-4 py-3 bg-gradient-to-b from-black/95 via-black/60 to-transparent ${
+              areControlsVisible
+                ? 'opacity-100 pointer-events-auto transition-opacity duration-150 ease-out'
+                : 'opacity-0 pointer-events-none transition-opacity duration-300 ease-in'
             }`}
           >
             <div className="flex items-center gap-3 min-w-0">
               <button
                 onClick={leaveHall}
-                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-zinc-900/85 hover:bg-zinc-800 border border-zinc-700/70 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shrink-0"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-black/60 hover:bg-black/90 border border-white/15 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shrink-0 backdrop-blur-md"
               >
                 <ChevronLeft className="w-4 h-4" />
                 <span>Home</span>
@@ -940,7 +2004,7 @@ export const HallView: React.FC = () => {
                     </>
                   )}
                 </div>
-                <h1 className="text-sm sm:text-base font-bold text-zinc-100 truncate">
+                <h1 className="text-sm sm:text-base font-bold text-zinc-100 truncate drop-shadow-md">
                   {activeHall.title}
                 </h1>
               </div>
@@ -950,7 +2014,7 @@ export const HallView: React.FC = () => {
             <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={() => setForceLandscapeLayout((prev) => !prev)}
-                className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-zinc-900/85 hover:bg-zinc-800 border border-zinc-700/70 text-xs text-zinc-300 flex items-center gap-1.5"
+                className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/90 border border-white/15 text-xs text-zinc-300 flex items-center gap-1.5 backdrop-blur-md"
                 title="Toggle Portrait / Landscape Hall Layout"
               >
                 <Smartphone className="w-3.5 h-3.5 text-rose-400" />
@@ -959,19 +2023,18 @@ export const HallView: React.FC = () => {
                 </span>
               </button>
 
-              {/* Quick More Space For Video toggle */}
               {useSideBySideLandscape && (
                 <button
                   onClick={() => {
                     if (sidePanelMinimized) {
                       setSidePanelMinimized(false);
                     } else if (sidebarWidth > 220) {
-                      setSidebarWidth(210); // Ultra-slim, maximum video space
+                      setSidebarWidth(210);
                     } else {
-                      setSidePanelMinimized(true); // 100% video
+                      setSidePanelMinimized(true);
                     }
                   }}
-                  className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-zinc-900/85 hover:bg-zinc-800 border border-zinc-700/70 text-xs text-zinc-200 flex items-center gap-1.5 transition-colors"
+                  className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-black/60 hover:bg-black/90 border border-white/15 text-xs text-zinc-200 flex items-center gap-1.5 transition-colors backdrop-blur-md"
                   title="Maximize video space"
                 >
                   <Maximize2 className="w-3.5 h-3.5 text-rose-400" />
@@ -985,7 +2048,6 @@ export const HallView: React.FC = () => {
                 </button>
               )}
 
-              {/* SECTION 19: Floating button when fullscreen side panel is minimized */}
               {useSideBySideLandscape && sidePanelMinimized && (
                 <button
                   onClick={() => setSidePanelMinimized(false)}
@@ -998,114 +2060,34 @@ export const HallView: React.FC = () => {
             </div>
           </div>
 
-          {/* Center Native Direct Video or YouTube Video Element */}
-          <div className="relative flex-1 min-h-0 min-w-0 w-full h-full flex items-center justify-center overflow-hidden">
-            {/* Transparent wake-up overlay for touch/mouse interaction when controls are auto-hidden */}
-            {!areControlsVisible && (
-              <div
-                onClick={handleVideoAreaActivity}
-                onTouchStart={handleVideoAreaActivity}
-                onMouseMove={handleVideoAreaActivity}
-                className="absolute inset-0 z-10 cursor-pointer"
-                title="Click or tap to show video controls"
-              />
-            )}
-            {youTubeVideoId ? (
-              <YouTubeVideoPlayer
-                ref={ytPlayerRef}
-                videoId={youTubeVideoId}
-                title={activeHall.title}
-                isPlaying={activeHall.isPlaying}
-                positionMs={activeHall.positionMs}
-                playbackSpeed={activeHall.playbackSpeed || 1}
-                muted={movieMuted}
-                volume={movieVolume}
-                onTimeUpdate={(posMs: number, durMs: number) => {
-                  if (isCurrentUserHost) {
-                    hostUpdatePositionSilent(posMs, durMs > 0 ? durMs : undefined);
-                  }
-                }}
-                onDurationChange={(durMs: number) => {
-                  if (isCurrentUserHost && durMs > 0) {
-                    hostUpdatePositionSilent(activeHall.positionMs, durMs);
-                  }
-                }}
-                onPlayStateChange={(playing) => {
-                  if (!isCurrentUserHost) return;
-                  if (playing && !activeHall.isPlaying) {
-                    hostPlay();
-                  } else if (!playing && activeHall.isPlaying) {
-                    hostPause();
-                  }
-                }}
-                className="w-full h-full"
-              />
-            ) : (
-              <video
-                ref={videoRef}
-                className="w-full h-full max-w-full max-h-full object-contain"
-                playsInline
-                onTimeUpdate={(e) => {
-                  if (!isCurrentUserHost) return;
-                  const v = e.currentTarget;
-                  if (v.duration > 0) {
-                    // Keep authoritative position advancing smoothly
-                    hostUpdatePositionSilent(activeHall.positionMs);
-                  }
-                }}
-                onError={() => {
-                  const v = videoRef.current;
-                  if (
-                    v &&
-                    !usedProxyStream &&
-                    activeHall.videoUrl &&
-                    activeHall.videoUrl.startsWith('http')
-                  ) {
-                    setUsedProxyStream(true);
-                    v.src = `/api/video/stream?url=${encodeURIComponent(activeHall.videoUrl)}`;
-                    v.load();
-                    if (activeHall.isPlaying) {
-                      v.play().catch(() => {});
-                    }
-                  }
-                }}
-              />
-            )}
-
-            {subtitleTrack !== 'OFF' && (
-              <div className="absolute bottom-14 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-lg bg-black/80 text-zinc-100 text-xs sm:text-sm font-medium pointer-events-none">
-                {subtitleTrack === 'EN'
-                  ? '[English CC] "Do not go gentle into that good night..."'
-                  : '[العربية] "لا تدخل في ذلك الليل الطويل بهدوء..."'}
-              </div>
-            )}
-
-            {/* SECTION 24: Floating Reactions Overlay (floats upward, scales, fades out in ~2s) */}
-            <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
-              {floatingReactions.map((r) => (
-                <div
-                  key={r.id}
-                  style={{ left: `${r.xOffsetPercent}%` }}
-                  className="absolute bottom-12 flex flex-col items-center animate-float-reaction"
-                >
-                  <span className="text-3xl sm:text-4xl drop-shadow-lg">{r.emoji}</span>
-                  <span className="text-[10px] font-semibold text-zinc-200 bg-black/70 px-2 py-0.5 rounded-md mt-0.5">
-                    {r.senderName}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* BOTTOM PLAYER BAR: STRICT HOST vs VIEWER SEPARATION (Sections 4, 16, 17) */}
+          {/* OVERLAY 2: BOTTOM VIDEO PLAYER CONTROL BUTTONS AND REMOTE BUTTONS OVERLAY ON VIDEO */}
           <div
-            className={`relative z-20 px-4 py-3 bg-gradient-to-t from-black/95 via-black/75 to-transparent space-y-2.5 transition-opacity duration-300 ease-in-out ${
-              areControlsVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+            onMouseEnter={() => {
+              isHoveringControlsRef.current = true;
+              showControlsInstantly();
+            }}
+            onMouseLeave={() => {
+              isHoveringControlsRef.current = false;
+              scheduleHideControls(3000);
+            }}
+            onTouchStart={() => {
+              isHoveringControlsRef.current = false;
+              showControlsInstantly();
+              scheduleHideControls(3000);
+            }}
+            onClick={() => {
+              isHoveringControlsRef.current = false;
+              scheduleHideControls(3000);
+            }}
+            className={`absolute bottom-0 left-0 right-0 z-30 px-4 py-3 bg-gradient-to-t from-black/95 via-black/80 to-transparent space-y-2.5 ${
+              areControlsVisible
+                ? 'opacity-100 pointer-events-auto transition-opacity duration-150 ease-out'
+                : 'opacity-0 pointer-events-none transition-opacity duration-300 ease-in'
             }`}
           >
-            {/* Progress / Seek Bar */}
+            {/* Progress / Seek Bar Overlay */}
             <div className="flex items-center gap-3">
-              <span className="text-xs font-mono-tabular text-zinc-200 w-16">
+              <span className="text-xs font-mono-tabular text-zinc-200 w-16 drop-shadow">
                 {formatDurationMs(activeHall.positionMs)}
               </span>
 
@@ -1125,12 +2107,12 @@ export const HallView: React.FC = () => {
                         (nextMs / Math.max(1, activeHall.durationMs)) * videoRef.current.duration;
                     }
                   }}
-                  className="flex-1 h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-rose-500"
+                  className="flex-1 h-1.5 bg-zinc-700/80 rounded-lg appearance-none cursor-pointer accent-rose-500"
                   title="Host Authoritative Seek Bar"
                 />
               ) : (
                 <div
-                  className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden"
+                  className="flex-1 h-1.5 bg-zinc-800/80 rounded-full overflow-hidden backdrop-blur-xs"
                   title="Host controls playback position"
                 >
                   <div
@@ -1145,18 +2127,17 @@ export const HallView: React.FC = () => {
                 </div>
               )}
 
-              <span className="text-xs font-mono-tabular text-zinc-400 w-16 text-right">
+              <span className="text-xs font-mono-tabular text-zinc-300 w-16 text-right drop-shadow">
                 {formatDurationMs(activeHall.durationMs)}
               </span>
             </div>
 
-            {/* Controls Row */}
+            {/* Overlay Control & Remote Buttons Row */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              {/* Left Group: Host Playback Controls OR Viewer Notice */}
+              {/* Left Group: Host Playback Controls OR Viewer Sync Status */}
               <div className="flex items-center gap-1.5">
                 {isCurrentUserHost ? (
                   <>
-                    {/* SECTION 16: HOST PLAYER CONTROLS */}
                     <button
                       onClick={() => {
                         if (activeHall.isPlaying) {
@@ -1167,7 +2148,7 @@ export const HallView: React.FC = () => {
                           ytPlayerRef.current?.play();
                         }
                       }}
-                      className="min-h-[42px] min-w-[42px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center transition-colors"
+                      className="min-h-[42px] min-w-[42px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center transition-colors shadow-md"
                       title={activeHall.isPlaying ? 'Pause Hall' : 'Play Hall'}
                     >
                       {activeHall.isPlaying ? (
@@ -1176,18 +2157,24 @@ export const HallView: React.FC = () => {
                         <Play className="w-4 h-4 fill-current" />
                       )}
                     </button>
+
                     <button
                       onClick={() => {
                         const nextMs = Math.max(0, activeHall.positionMs - 10000);
                         hostSkip(-10000);
-                        ytPlayerRef.current?.seekToMs(nextMs);
+                        if (youTubeVideoId) {
+                          ytPlayerRef.current?.seekToMs(nextMs);
+                        } else if (videoRef.current) {
+                          videoRef.current.currentTime = nextMs / 1000;
+                        }
                       }}
-                      className="min-h-[42px] px-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs font-mono-tabular text-zinc-200 flex items-center gap-1"
+                      className="min-h-[42px] px-2.5 rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-xs font-mono-tabular text-zinc-200 flex items-center gap-1 backdrop-blur-md"
                       title="-10 sec"
                     >
                       <Rewind className="w-3.5 h-3.5" />
                       <span>-10s</span>
                     </button>
+
                     <button
                       onClick={() => {
                         const nextMs = Math.min(
@@ -1195,14 +2182,19 @@ export const HallView: React.FC = () => {
                           activeHall.positionMs + 10000
                         );
                         hostSkip(10000);
-                        ytPlayerRef.current?.seekToMs(nextMs);
+                        if (youTubeVideoId) {
+                          ytPlayerRef.current?.seekToMs(nextMs);
+                        } else if (videoRef.current) {
+                          videoRef.current.currentTime = nextMs / 1000;
+                        }
                       }}
-                      className="min-h-[42px] px-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs font-mono-tabular text-zinc-200 flex items-center gap-1"
+                      className="min-h-[42px] px-2.5 rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-xs font-mono-tabular text-zinc-200 flex items-center gap-1 backdrop-blur-md"
                       title="+10 sec"
                     >
                       <span>+10s</span>
                       <FastForward className="w-3.5 h-3.5" />
                     </button>
+
                     <button
                       onClick={() => {
                         const speeds = [0.75, 1, 1.25, 1.5, 2];
@@ -1211,22 +2203,22 @@ export const HallView: React.FC = () => {
                         hostSetPlaybackSpeed(next);
                         ytPlayerRef.current?.setPlaybackRate(next);
                       }}
-                      className="min-h-[42px] px-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs font-mono-tabular text-zinc-200"
+                      className="min-h-[42px] px-2.5 rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-xs font-mono-tabular text-zinc-200 backdrop-blur-md"
                       title="Playback Speed"
                     >
                       {activeHall.playbackSpeed}x
                     </button>
 
-                    {/* Subtitle & Audio Track Selectors (Section 16) */}
+                    {/* Subtitle & Audio Track Selectors */}
                     <button
                       onClick={() => {
                         const order: ('OFF' | 'EN' | 'AR')[] = ['OFF', 'EN', 'AR'];
                         setSubtitleTrack(order[(order.indexOf(subtitleTrack) + 1) % order.length]);
                       }}
-                      className={`min-h-[42px] px-2.5 rounded-xl text-xs font-medium flex items-center gap-1 ${
+                      className={`min-h-[42px] px-2.5 rounded-xl text-xs font-medium flex items-center gap-1 backdrop-blur-md ${
                         subtitleTrack !== 'OFF'
-                          ? 'bg-rose-600/20 border border-rose-500/40 text-rose-300'
-                          : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                          ? 'bg-rose-600/30 border border-rose-500 text-rose-200'
+                          : 'bg-black/60 hover:bg-black/80 border border-white/10 text-zinc-300'
                       }`}
                       title="Subtitle Track"
                     >
@@ -1240,23 +2232,23 @@ export const HallView: React.FC = () => {
                           prev === 'SURROUND_5_1' ? 'STEREO' : 'SURROUND_5_1'
                         )
                       }
-                      className="hidden sm:flex min-h-[42px] px-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs text-zinc-300 items-center gap-1"
+                      className="hidden sm:flex min-h-[42px] px-2.5 rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-xs text-zinc-300 items-center gap-1 backdrop-blur-md"
                       title="Audio Track"
                     >
                       <span>{audioTrack === 'SURROUND_5_1' ? '5.1' : 'Stereo'}</span>
                     </button>
 
-                    {/* Change Movie */}
+                    {/* Remote Button: Change Movie */}
                     <div className="relative">
                       <button
                         onClick={() => setShowChangeMovieMenu((prev) => !prev)}
-                        className="min-h-[42px] px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs font-medium text-zinc-200 flex items-center gap-1.5"
+                        className="min-h-[42px] px-3 rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-xs font-medium text-zinc-200 flex items-center gap-1.5 backdrop-blur-md"
                       >
                         <Film className="w-3.5 h-3.5 text-rose-400" />
                         <span className="hidden lg:inline">Change Movie</span>
                       </button>
                       {showChangeMovieMenu && (
-                        <div className="absolute bottom-12 left-0 w-60 rounded-xl bg-zinc-950 border border-zinc-800 p-2 shadow-2xl z-30 space-y-1">
+                        <div className="absolute bottom-12 left-0 w-60 rounded-xl bg-zinc-950 border border-zinc-800 p-2 shadow-2xl z-40 space-y-1">
                           <div className="text-[11px] font-semibold text-zinc-400 px-2 py-1">
                             Switch Hall Movie
                           </div>
@@ -1276,29 +2268,57 @@ export const HallView: React.FC = () => {
                       )}
                     </div>
 
-                    {/* Share Screen / App */}
+                    {/* Remote Button: Share Screen / App */}
                     <button
                       onClick={() => setShowSharePrivacyModal(true)}
-                      className="min-h-[42px] px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs font-medium text-zinc-200 flex items-center gap-1.5"
+                      className="min-h-[42px] px-3 rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-xs font-medium text-zinc-200 flex items-center gap-1.5 backdrop-blur-md"
                       title="Share Android Application or Screen"
                     >
                       <AppWindow className="w-3.5 h-3.5 text-rose-400" />
                       <span className="hidden xl:inline">Share App</span>
                     </button>
+
+                    {/* Remote Button: Interval Break */}
+                    <button
+                      onClick={() => setShowIntervalBreakModal(true)}
+                      className={`min-h-[42px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 backdrop-blur-md transition-all ${
+                        activeHall.breakState?.isActive
+                          ? 'bg-amber-600/35 border-amber-500 text-amber-200 shadow-lg shadow-amber-950/50 animate-pulse'
+                          : 'bg-black/60 hover:bg-black/80 border-white/10 text-zinc-200'
+                      }`}
+                      title="Interval Break: Pause movie and set a countdown break timer, auto-resumes movie when finished"
+                    >
+                      <Coffee className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="hidden xl:inline">
+                        {activeHall.breakState?.isActive
+                          ? `Break (${Math.floor(breakRemainingSec / 60)}:${(breakRemainingSec % 60).toString().padStart(2, '0')})`
+                          : 'Interval Break'}
+                      </span>
+                    </button>
                   </>
                 ) : (
-                  /* SECTION 17: VIEWER PLAYER — No Play/Pause/Seek/Forward/Rewind! */
-                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900/80 border border-zinc-800 text-xs text-zinc-300">
-                    <Radio className="w-3.5 h-3.5 text-rose-400" />
-                    <span>
-                      Synced to Host ({activeHall.hostName}) ·{' '}
-                      {activeHall.isPlaying ? 'Playing' : 'Paused'}
-                    </span>
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-xs text-zinc-300 backdrop-blur-md">
+                    {activeHall.breakState?.isActive ? (
+                      <>
+                        <Coffee className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                        <span className="text-amber-200 font-semibold">
+                          Interval Break ({Math.floor(breakRemainingSec / 60)}:{(breakRemainingSec % 60).toString().padStart(2, '0')})
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Radio className="w-3.5 h-3.5 text-rose-400" />
+                        <span>
+                          Synced to Host ({activeHall.hostName}) ·{' '}
+                          {activeHall.isPlaying ? 'Playing' : 'Paused'}
+                        </span>
+                      </>
+                    )}
                   </div>
                 )}
 
-                {/* Local Volume Control (Available to both Host & Viewer) */}
-                <div className="flex items-center gap-1.5 ml-1">
+                {/* Local Volume Control Overlay (Accessible to both Host and Members on all devices) */}
+                <div className="flex items-center gap-1.5 ml-1 bg-black/60 border border-white/10 rounded-xl px-2 py-1 backdrop-blur-md">
                   <button
                     onClick={() => {
                       const next = !movieMuted;
@@ -1306,13 +2326,13 @@ export const HallView: React.FC = () => {
                       if (videoRef.current) videoRef.current.muted = next;
                       ytPlayerRef.current?.setMuted(next);
                     }}
-                    className="min-h-[42px] min-w-[42px] rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 flex items-center justify-center"
-                    title="Local Movie Volume"
+                    className="min-h-[32px] min-w-[32px] rounded-lg hover:bg-white/10 text-zinc-200 flex items-center justify-center"
+                    title="Mute / Unmute Volume"
                   >
                     {movieMuted || movieVolume === 0 ? (
-                      <VolumeX className="w-4 h-4" />
+                      <VolumeX className="w-4 h-4 text-rose-400" />
                     ) : (
-                      <Volume2 className="w-4 h-4" />
+                      <Volume2 className="w-4 h-4 text-zinc-100" />
                     )}
                   </button>
                   <input
@@ -1332,57 +2352,84 @@ export const HallView: React.FC = () => {
                       ytPlayerRef.current?.setVolume(v);
                       ytPlayerRef.current?.setMuted(v === 0);
                     }}
-                    className="w-16 sm:w-20 h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-rose-500 hidden sm:block"
+                    className="w-16 sm:w-24 h-1.5 bg-zinc-700/80 rounded-lg appearance-none cursor-pointer accent-rose-500"
+                    title="Adjust Local Volume"
                   />
+                  <span className="text-[10px] font-mono-tabular text-zinc-300 w-8 text-right">
+                    {movieMuted ? '0%' : `${Math.round(movieVolume * 100)}%`}
+                  </span>
                 </div>
               </div>
 
-              {/* Right Group: Mic, Camera, Reactions, Fullscreen, Leave / End Hall */}
+              {/* Right Group: Mic, Camera, Reaction, Fullscreen, End / Leave Buttons */}
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={toggleLocalMic}
-                  className={`min-h-[42px] min-w-[42px] rounded-xl flex items-center justify-center transition-colors ${
+                  className={`min-h-[42px] min-w-[42px] rounded-xl flex items-center justify-center transition-colors backdrop-blur-md relative ${
                     myHallMember?.micEnabled
-                      ? 'bg-emerald-600/20 border border-emerald-500/40 text-emerald-300'
-                      : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400'
+                      ? 'bg-emerald-600/30 border border-emerald-500 text-emerald-200'
+                      : 'bg-black/60 hover:bg-black/80 border border-white/10 text-zinc-400'
                   }`}
-                  title={myHallMember?.micEnabled ? 'Mute Microphone' : 'Unmute Microphone'}
+                  title={
+                    myHallMember?.micEnabled
+                      ? `Disable My Microphone (Live Level: ${localMicLevel}%)`
+                      : 'Enable My Device Microphone'
+                  }
                 >
                   {myHallMember?.micEnabled ? (
-                    <Mic className="w-4 h-4" />
+                    <>
+                      <Mic className="w-4 h-4" />
+                      <span
+                        className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ring-2 ring-black ${
+                          localMicLevel > 12 ? 'bg-emerald-400 animate-ping' : 'bg-emerald-500'
+                        }`}
+                      />
+                    </>
                   ) : (
                     <MicOff className="w-4 h-4" />
                   )}
                 </button>
 
                 <button
-                  onClick={toggleLocalCamera}
-                  className={`min-h-[42px] min-w-[42px] rounded-xl flex items-center justify-center transition-colors ${
+                  onClick={() => {
+                    toggleLocalCamera();
+                    if (!myHallMember?.cameraEnabled) {
+                      setSidePanelMinimized(false);
+                      setCamerasCollapsed(false);
+                      if (sidePanelMode !== 'SPLIT' && sidePanelMode !== 'CHAT' && sidePanelMode !== 'CAMERAS') {
+                        setSidePanelMode('SPLIT');
+                      }
+                    }
+                  }}
+                  className={`min-h-[42px] min-w-[42px] rounded-xl flex items-center justify-center transition-colors backdrop-blur-md relative ${
                     myHallMember?.cameraEnabled
-                      ? 'bg-emerald-600/20 border border-emerald-500/40 text-emerald-300'
-                      : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400'
+                      ? 'bg-emerald-600/30 border border-emerald-500 text-emerald-200'
+                      : 'bg-black/60 hover:bg-black/80 border border-white/10 text-zinc-400'
                   }`}
-                  title={myHallMember?.cameraEnabled ? 'Turn Camera Off' : 'Turn Camera On'}
+                  title={myHallMember?.cameraEnabled ? 'Turn Camera Off' : 'Turn Device Camera On (Chat Box)'}
                 >
                   {myHallMember?.cameraEnabled ? (
-                    <Camera className="w-4 h-4" />
+                    <>
+                      <Camera className="w-4 h-4" />
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-black animate-pulse" />
+                    </>
                   ) : (
                     <CameraOff className="w-4 h-4" />
                   )}
                 </button>
 
-                {/* Quick Heart Reaction */}
+                {/* Floating Reaction Trigger Button */}
                 <button
                   onClick={() => sendHallReaction('❤️')}
-                  className="min-h-[42px] min-w-[42px] rounded-xl bg-zinc-900 hover:bg-zinc-800 text-base flex items-center justify-center active:scale-90 transition-transform"
-                  title="Send Reaction"
+                  className="min-h-[42px] min-w-[42px] rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-base flex items-center justify-center active:scale-90 transition-transform backdrop-blur-md"
+                  title="Send Live Reaction"
                 >
                   ❤️
                 </button>
 
                 <button
                   onClick={handleToggleFullscreen}
-                  className="min-h-[42px] min-w-[42px] rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 flex items-center justify-center"
+                  className="min-h-[42px] min-w-[42px] rounded-xl bg-black/60 hover:bg-black/80 border border-white/10 text-zinc-200 flex items-center justify-center backdrop-blur-md"
                   title="Toggle Fullscreen Landscape"
                 >
                   {isFullscreen ? (
@@ -1395,7 +2442,7 @@ export const HallView: React.FC = () => {
                 {isCurrentUserHost ? (
                   <button
                     onClick={() => setShowEndHallConfirm(true)}
-                    className="min-h-[42px] px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white flex items-center gap-1.5"
+                    className="min-h-[42px] px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white flex items-center gap-1.5 shadow-md"
                   >
                     <Power className="w-3.5 h-3.5" />
                     <span>End Hall</span>
@@ -1403,7 +2450,7 @@ export const HallView: React.FC = () => {
                 ) : (
                   <button
                     onClick={leaveHall}
-                    className="min-h-[42px] px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5"
+                    className="min-h-[42px] px-3 rounded-xl bg-black/60 hover:bg-black/80 border border-white/15 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 backdrop-blur-md"
                   >
                     <LogOut className="w-3.5 h-3.5" />
                     <span>Leave</span>
@@ -1460,7 +2507,6 @@ export const HallView: React.FC = () => {
         {/* SECTION 20: MOBILE PORTRAIT COMPACT CONTROLS BAR & BOTTOM SHEET */}
         {!useSideBySideLandscape && !isTabletPortrait && (
           <div className="flex-1 flex flex-col min-h-0 bg-zinc-950">
-            {/* Compact Mobile Portrait Hall Controls Bar */}
             <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
               <div className="text-xs font-semibold text-zinc-200">
                 LIVE · {activeHall.viewerCount} watching
@@ -1491,7 +2537,6 @@ export const HallView: React.FC = () => {
 
             {renderCollaborationBody()}
 
-            {/* Slide-up Bottom Sheet when triggered on phone portrait */}
             {mobileBottomSheetOpen && (
               <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex flex-col justify-end">
                 <div className="h-[72vh] rounded-t-3xl bg-[#111115] border-t border-zinc-800 flex flex-col overflow-hidden">
@@ -1525,7 +2570,6 @@ export const HallView: React.FC = () => {
                 <p className="text-xs text-zinc-400">Everyone will be disconnected.</p>
               </div>
             </div>
-
             <div className="grid grid-cols-2 gap-3 pt-2">
               <button
                 onClick={() => setShowEndHallConfirm(false)}
@@ -1541,6 +2585,145 @@ export const HallView: React.FC = () => {
                 className="min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white"
               >
                 END HALL
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 41: INTERVAL BREAK SETUP MODAL */}
+      {showIntervalBreakModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-zinc-950 border border-zinc-800 p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                  <Coffee className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">Set Interval Break</h3>
+                  <p className="text-xs text-zinc-400">
+                    Pause movie with a synchronized countdown timer
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowIntervalBreakModal(false)}
+                className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* If break already active, offer resume option */}
+            {activeHall.breakState?.isActive && (
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
+                <div className="text-xs text-amber-200">
+                  <div className="font-bold">Break currently in progress</div>
+                  <div className="text-[11px] text-amber-300/80 font-mono">
+                    Time remaining: {Math.floor(breakRemainingSec / 60)}:{(breakRemainingSec % 60).toString().padStart(2, '0')}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    hostEndIntervalBreak(true);
+                    setShowIntervalBreakModal(false);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shrink-0 shadow-md"
+                >
+                  Resume Now
+                </button>
+              </div>
+            )}
+
+            {/* Presets */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-zinc-300">Choose Break Duration:</label>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                {[
+                  { label: '1 Min', sec: 60, desc: 'Quick Bio' },
+                  { label: '3 Min', sec: 180, desc: 'Popcorn' },
+                  { label: '5 Min', sec: 300, desc: 'Snack' },
+                  { label: '10 Min', sec: 600, desc: 'Coffee' },
+                  { label: '15 Min', sec: 900, desc: 'Intermission' },
+                ].map((preset) => (
+                  <button
+                    key={preset.sec}
+                    type="button"
+                    onClick={() => setSelectedBreakSec(preset.sec)}
+                    className={`p-2.5 rounded-2xl border flex flex-col items-center justify-center transition-all ${
+                      selectedBreakSec === preset.sec
+                        ? 'bg-amber-500/25 border-amber-500 text-amber-100 ring-2 ring-amber-500/50 shadow-md'
+                        : 'bg-zinc-900/90 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    <span className="text-xs font-bold">{preset.label}</span>
+                    <span className="text-[10px] text-zinc-400 mt-0.5">{preset.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Custom Minutes */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-zinc-400">Custom Duration:</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={120}
+                  value={Math.floor(selectedBreakSec / 60)}
+                  onChange={(e) => {
+                    const mins = Math.max(1, Math.min(120, Number(e.target.value) || 1));
+                    setSelectedBreakSec(mins * 60);
+                  }}
+                  className="w-24 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-500"
+                />
+                <span className="text-xs text-zinc-400">minutes</span>
+              </div>
+            </div>
+
+            {/* Break Title / Message */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-zinc-400">Break Message / Reason:</label>
+              <input
+                type="text"
+                value={breakMessage}
+                onChange={(e) => setBreakMessage(e.target.value)}
+                placeholder="e.g. Popcorn & Refreshment Break 🍿"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            {/* Info notice */}
+            <div className="p-3.5 rounded-2xl bg-zinc-900/60 border border-zinc-800/80 flex items-start gap-2.5 text-xs text-zinc-300">
+              <Timer className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                Movie will pause automatically. All viewers will see the synchronized countdown. When timer reaches 00:00, the movie will automatically resume playing!
+              </span>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowIntervalBreakModal(false)}
+                className="px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-semibold text-zinc-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  hostStartIntervalBreak(selectedBreakSec, breakMessage);
+                  setShowIntervalBreakModal(false);
+                }}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-xs font-bold text-white flex items-center gap-1.5 shadow-lg shadow-amber-950/40 transition-transform active:scale-95"
+              >
+                <Coffee className="w-3.5 h-3.5" />
+                <span>START BREAK ({Math.max(1, Math.round(selectedBreakSec / 60))} MIN)</span>
               </button>
             </div>
           </div>

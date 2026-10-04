@@ -7,6 +7,7 @@ import {
   KeyRound,
   Plus,
   Radio,
+  Search,
   Shield,
   Trash2,
   UserPlus,
@@ -14,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { useChillMate } from '../context/ChillMateContext';
-import { ActiveTab, TeamRole } from '../types';
+import { ActiveTab, Team, TeamRole } from '../types';
 import { ASSETS, formatDurationMs } from '../utils/media';
 
 interface TeamViewProps {
@@ -31,6 +32,7 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
     updateTeamCredentials,
     deleteTeam,
     joinTeamByNameAndPin,
+    searchTeamByNameAndPin,
     teamMembers,
     updateMemberRole,
     removeTeamMember,
@@ -59,9 +61,14 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
   const [editTeamDesc, setEditTeamDesc] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
 
-  // Join Team by Name + PIN fields
+  // Search & Join Team by Name + PIN fields
   const [joinTeamNameInput, setJoinTeamNameInput] = useState('');
   const [joinPinInput, setJoinPinInput] = useState('');
+  const [searchedTeamResult, setSearchedTeamResult] = useState<{
+    team: Team;
+    memberCount: number;
+  } | null>(null);
+  const [isSearchingTeam, setIsSearchingTeam] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joinSuccessBanner, setJoinSuccessBanner] = useState<string | null>(null);
 
@@ -124,6 +131,25 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
     setTimeout(() => setRbacFeedback(null), 3500);
   };
 
+  const handleSearchTeam = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setJoinError(null);
+    setSearchedTeamResult(null);
+    setIsSearchingTeam(true);
+    const res = await searchTeamByNameAndPin(joinTeamNameInput, joinPinInput);
+    setIsSearchingTeam(false);
+    if (!res.ok || !res.team) {
+      setJoinError(
+        res.error || 'No team found matching that Team Name and PIN number.'
+      );
+      return;
+    }
+    setSearchedTeamResult({
+      team: res.team,
+      memberCount: res.memberCount || 1,
+    });
+  };
+
   const handleJoinTeam = async (e: React.FormEvent) => {
     e.preventDefault();
     setJoinError(null);
@@ -136,6 +162,7 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
     }
     setJoinTeamNameInput('');
     setJoinPinInput('');
+    setSearchedTeamResult(null);
     setShowJoinModal(false);
     if (res.team) {
       setJoinSuccessBanner(`Successfully joined "${res.team.name}" with PIN!`);
@@ -228,12 +255,13 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
           <button
             onClick={() => {
               setJoinError(null);
+              setSearchedTeamResult(null);
               setShowJoinModal(true);
             }}
             className="min-h-[42px] px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-100 flex items-center gap-1.5 transition-colors"
           >
-            <UserPlus className="w-3.5 h-3.5 text-rose-400" />
-            <span>Join by Name & PIN</span>
+            <Search className="w-3.5 h-3.5 text-rose-400" />
+            <span>Search & Join by Name + PIN</span>
           </button>
 
           <button
@@ -741,27 +769,31 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
         </div>
       )}
 
-      {/* Join Team by Team Name & PIN Modal */}
+      {/* Search & Join Team by Team Name & PIN Modal */}
       {showJoinModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-md rounded-2xl bg-zinc-950 border border-zinc-800 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-base font-semibold text-zinc-100">
-                  Join Team with Name & PIN
+                  Search & Join Team by Name + PIN
                 </h3>
                 <p className="text-xs text-zinc-400">
-                  Enter the exact Team Name and PIN number shared by the Team Owner
+                  Teams are private. A team will only appear when both its exact Name and PIN match.
                 </p>
               </div>
               <button
-                onClick={() => setShowJoinModal(false)}
+                onClick={() => {
+                  setShowJoinModal(false);
+                  setSearchedTeamResult(null);
+                  setJoinError(null);
+                }}
                 className="min-h-[36px] min-w-[36px] flex items-center justify-center text-zinc-400 hover:text-zinc-100"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <form onSubmit={handleJoinTeam} className="space-y-4">
+            <form onSubmit={handleSearchTeam} className="space-y-4">
               <div>
                 <label className="block text-xs text-zinc-400 mb-1">
                   Team Name
@@ -770,8 +802,12 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
                   type="text"
                   required
                   value={joinTeamNameInput}
-                  onChange={(e) => setJoinTeamNameInput(e.target.value)}
-                  placeholder="e.g. Prime Cinema Club"
+                  onChange={(e) => {
+                    setJoinTeamNameInput(e.target.value);
+                    setSearchedTeamResult(null);
+                    setJoinError(null);
+                  }}
+                  placeholder="Enter exact Team Name"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
                 />
               </div>
@@ -783,19 +819,63 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
                   type="text"
                   required
                   value={joinPinInput}
-                  onChange={(e) => setJoinPinInput(e.target.value)}
-                  placeholder="Enter Team PIN"
+                  onChange={(e) => {
+                    setJoinPinInput(e.target.value);
+                    setSearchedTeamResult(null);
+                    setJoinError(null);
+                  }}
+                  placeholder="Enter exact Team PIN"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono-tabular text-zinc-100 focus:outline-none focus:border-rose-500"
                 />
               </div>
 
               {joinError && <p className="text-xs text-rose-400">{joinError}</p>}
-              <button
-                type="submit"
-                className="w-full min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white"
-              >
-                Join Team
-              </button>
+
+              {!searchedTeamResult ? (
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="submit"
+                    disabled={isSearchingTeam}
+                    className="min-h-[44px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-100 flex items-center justify-center gap-1.5"
+                  >
+                    <Search className="w-3.5 h-3.5 text-rose-400" />
+                    <span>{isSearchingTeam ? 'Searching...' : 'Search Team'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => void handleJoinTeam(e)}
+                    className="min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white flex items-center justify-center gap-1.5"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Join Directly</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl bg-zinc-900/90 border border-emerald-500/40 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold text-emerald-400">
+                        MATCH FOUND · PIN VERIFIED
+                      </div>
+                      <div className="text-sm font-bold text-zinc-100 truncate mt-0.5">
+                        {searchedTeamResult.team.name}
+                      </div>
+                      <div className="text-xs text-zinc-400 truncate">
+                        {searchedTeamResult.memberCount} member(s) ·{' '}
+                        {searchedTeamResult.team.description || 'Private Team'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => void handleJoinTeam(e)}
+                    className="w-full min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white flex items-center justify-center gap-1.5"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>Join "{searchedTeamResult.team.name}" Now</span>
+                  </button>
+                </div>
+              )}
             </form>
           </div>
         </div>

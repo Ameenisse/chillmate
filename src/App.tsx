@@ -17,6 +17,7 @@ import { AppSharePrivacyModal } from './components/hall/AppSharePrivacyModal';
 import { AndroidSourceModal } from './components/android/AndroidSourceModal';
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
 import { AuthScreen } from './components/auth/AuthScreen';
+import { AppLockScreen } from './components/auth/AppLockScreen';
 import { SuperAdminControlModal } from './components/admin/SuperAdminControlModal';
 
 const checkIsAdminUrl = (): boolean => {
@@ -29,6 +30,7 @@ const checkIsAdminUrl = (): boolean => {
 const ChillMateContent: React.FC = () => {
   const {
     isAuthenticated,
+    isAppLocked,
     isSuperAdmin,
     isSuperAdminModalOpen,
     setIsSuperAdminModalOpen,
@@ -87,6 +89,11 @@ const ChillMateContent: React.FC = () => {
   // First-Time App Open / Signed-Out / Pending Approval Gate Screen
   if (!isAuthenticated) {
     return <AuthScreen isAdminRoute={false} />;
+  }
+
+  // Individual User App Lock (PIN) Gate Screen
+  if (isAppLocked) {
+    return <AppLockScreen />;
   }
 
   const containerWidthClass =

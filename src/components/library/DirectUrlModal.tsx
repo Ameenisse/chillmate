@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -6,9 +6,11 @@ import {
   Film,
   Link2,
   Loader2,
+  Lock,
   Play,
   Radio,
   Sparkles,
+  Users,
   X,
 } from 'lucide-react';
 import { useChillMate } from '../../context/ChillMateContext';
@@ -33,10 +35,13 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
     startMovieHall,
     downloadTasks,
     autoDownloadLinkToLibrary,
+    activeLibraryScope,
+    teams,
   } = useChillMate();
 
   const [urlInput, setUrlInput] = useState('');
   const [titleInput, setTitleInput] = useState('');
+  const [targetScope, setTargetScope] = useState<'SELF' | string>(activeLibraryScope);
   const [testing, setTesting] = useState(false);
   const [downloadingNow, setDownloadingNow] = useState(false);
   const [resolution, setResolution] = useState<WebpageResolutionResult | null>(null);
@@ -45,7 +50,16 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [downloadedBanner, setDownloadedBanner] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (isOpen) {
+      setTargetScope(activeLibraryScope);
+    }
+  }, [isOpen, activeLibraryScope]);
+
   if (!isOpen) return null;
+
+  const isTargetSelf = targetScope === 'SELF' || !teams.some((t) => t.id === targetScope);
+  const selectedTeamName = teams.find((t) => t.id === targetScope)?.name || 'Team';
 
   const formats = resolution?.availableFormats?.length
     ? resolution.availableFormats
@@ -127,6 +141,7 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
       sizeBytes: selectedFormat.sizeBytes,
       category: 'RECENTLY_ADDED',
       preResolved: res,
+      targetLibraryScope: targetScope,
     });
     setDownloadingNow(false);
 
@@ -136,7 +151,9 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
 
     if (item) {
       setDownloadedBanner(
-        `Direct video "${item.title}" (${selectedFormat.label}) downloaded into your Team Library!`
+        isTargetSelf
+          ? `Direct video "${item.title}" (${selectedFormat.label}) saved to your Personal Self Library!`
+          : `Direct video "${item.title}" (${selectedFormat.label}) saved to ${selectedTeamName} Team Library!`
       );
     }
   };
@@ -282,6 +299,46 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
               placeholder="Leave blank to auto-detect video title..."
               className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
             />
+          </div>
+
+          {/* Destination Library Selector */}
+          <div>
+            <label className="block text-xs text-zinc-400 mb-1.5">
+              Save / Download Into Library:
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetScope('SELF')}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  isTargetSelf
+                    ? 'bg-emerald-600/20 border-emerald-500 text-emerald-200'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                <span>My Self Library (Only Me)</span>
+              </button>
+
+              {teams.map((t) => {
+                const active = targetScope === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setTargetScope(t.id)}
+                    className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                      active
+                        ? 'bg-rose-600/20 border-rose-500 text-rose-100'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5 text-rose-400" />
+                    <span>{t.name} Team Library</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -486,7 +543,9 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
             ) : (
               <Download className="w-4 h-4" />
             )}
-            <span>DOWNLOAD TO LIBRARY</span>
+            <span>
+              {isTargetSelf ? 'SAVE TO SELF LIBRARY' : `SAVE TO ${selectedTeamName.toUpperCase()}`}
+            </span>
           </button>
         </div>
       </div>

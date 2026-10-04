@@ -22,6 +22,8 @@ interface ServerUserAccount {
   systemRole: 'SUPER_ADMIN' | 'USER';
   accountStatus: 'PENDING' | 'APPROVED' | 'SUSPENDED' | 'DECLINED';
   authSource: 'GOOGLE' | 'EMAIL';
+  appLockPin?: string;
+  appLockEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -54,6 +56,7 @@ interface ServerTeamMember {
 interface ServerLibraryItem {
   id: string;
   teamId: string;
+  libraryScope?: 'SELF' | 'TEAM';
   title: string;
   description?: string;
   posterUrl?: string;
@@ -81,12 +84,17 @@ interface PersistentBackendDatabase {
   teams: ServerTeam[];
   teamMembers: ServerTeamMember[];
   libraryItems: ServerLibraryItem[];
+  tombstones?: {
+    users: string[];
+    teams: string[];
+    teamMembers: string[];
+    libraryItems: string[];
+  };
 }
 
 const DB_DIR = path.resolve(__dirname, 'data');
 const DB_FILE = path.join(DB_DIR, 'chillmate-db-v2.json');
 const BACKUP_DB_FILE = path.join(DB_DIR, 'chillmate-backup-db.json');
-const LEGACY_DB_FILE = path.join(DB_DIR, 'chillmate-db.json');
 
 const DEFAULT_BACKEND_DB: PersistentBackendDatabase = {
   users: [
@@ -105,6 +113,12 @@ const DEFAULT_BACKEND_DB: PersistentBackendDatabase = {
   teams: [],
   teamMembers: [],
   libraryItems: [],
+  tombstones: {
+    users: [],
+    teams: [],
+    teamMembers: [],
+    libraryItems: [],
+  },
 };
 
 function parseDbFile(filePath: string): PersistentBackendDatabase | null {
@@ -136,6 +150,12 @@ function parseDbFile(filePath: string): PersistentBackendDatabase | null {
           : [],
         teamMembers: Array.isArray(parsed.teamMembers) ? parsed.teamMembers : [],
         libraryItems: Array.isArray(parsed.libraryItems) ? parsed.libraryItems : [],
+        tombstones: {
+          users: Array.isArray(parsed.tombstones?.users) ? parsed.tombstones.users : [],
+          teams: Array.isArray(parsed.tombstones?.teams) ? parsed.tombstones.teams : [],
+          teamMembers: Array.isArray(parsed.tombstones?.teamMembers) ? parsed.tombstones.teamMembers : [],
+          libraryItems: Array.isArray(parsed.tombstones?.libraryItems) ? parsed.tombstones.libraryItems : [],
+        },
       };
     }
   } catch (err) {
@@ -148,14 +168,6 @@ function loadBackendDb(): PersistentBackendDatabase {
   try {
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true });
-    }
-    // Remove legacy v1 demo database file if present
-    if (fs.existsSync(LEGACY_DB_FILE)) {
-      try {
-        fs.unlinkSync(LEGACY_DB_FILE);
-      } catch {
-        // ignore
-      }
     }
 
     const primary = parseDbFile(DB_FILE);
@@ -174,6 +186,18 @@ function loadBackendDb(): PersistentBackendDatabase {
 
 const backendDb: PersistentBackendDatabase = loadBackendDb();
 
+function ensureTombstones() {
+  if (!backendDb.tombstones) {
+    backendDb.tombstones = {
+      users: [],
+      teams: [],
+      teamMembers: [],
+      libraryItems: [],
+    };
+  }
+  return backendDb.tombstones;
+}
+
 function saveBackendDb() {
   try {
     if (!fs.existsSync(DB_DIR)) {
@@ -188,14 +212,16 @@ function saveBackendDb() {
   }
 }
 
-// Additive merge helper: integrates client-known items without erasing server records
+// Additive merge helper: integrates client-known items without erasing server records or resurrecting explicitly deleted items
 function syncBackendState(incoming: Partial<PersistentBackendDatabase>): PersistentBackendDatabase {
   let modified = false;
+  const tombs = ensureTombstones();
 
-  // 1. Users: merge additively
+  // 1. Users: merge additively unless explicitly deleted
   if (Array.isArray(incoming.users)) {
     for (const incUser of incoming.users) {
       if (!incUser || !incUser.id || !incUser.email) continue;
+      if (tombs.users.includes(incUser.id)) continue;
       const existingIdx = backendDb.users.findIndex(
         (u) => u.id === incUser.id || u.email.toLowerCase() === incUser.email.toLowerCase()
       );
@@ -204,28 +230,47 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
         modified = true;
       } else {
         const cur = backendDb.users[existingIdx];
-        if (
-          cur.systemRole === 'SUPER_ADMIN' ||
-          cur.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()
-        ) {
-          continue;
-        }
-        if (incUser.displayName && incUser.displayName !== cur.displayName) {
+        const incTime = incUser.updatedAt ? Date.parse(incUser.updatedAt) : 0;
+        const curTime = cur.updatedAt ? Date.parse(cur.updatedAt) : 0;
+        const isIncomingNewer = incTime > curTime;
+
+        if (incUser.displayName && incUser.displayName !== cur.displayName && isIncomingNewer) {
           cur.displayName = incUser.displayName;
           modified = true;
         }
-        if (incUser.photoUrl && incUser.photoUrl !== cur.photoUrl) {
+        if (incUser.photoUrl && incUser.photoUrl !== cur.photoUrl && isIncomingNewer) {
           cur.photoUrl = incUser.photoUrl;
+          modified = true;
+        }
+        if (
+          incUser.appLockEnabled !== undefined &&
+          incUser.appLockEnabled !== cur.appLockEnabled &&
+          isIncomingNewer
+        ) {
+          cur.appLockEnabled = Boolean(incUser.appLockEnabled);
+          cur.appLockPin = incUser.appLockEnabled ? (incUser.appLockPin || '').trim() : '';
+          modified = true;
+        } else if (
+          incUser.appLockPin !== undefined &&
+          incUser.appLockPin !== cur.appLockPin &&
+          isIncomingNewer
+        ) {
+          cur.appLockPin = incUser.appLockPin;
+          modified = true;
+        }
+        if (isIncomingNewer && incUser.updatedAt) {
+          cur.updatedAt = incUser.updatedAt;
           modified = true;
         }
       }
     }
   }
 
-  // 2. Teams: merge additively
+  // 2. Teams: merge additively unless explicitly deleted
   if (Array.isArray(incoming.teams)) {
     for (const incTeam of incoming.teams) {
       if (!incTeam || !incTeam.id || !incTeam.name) continue;
+      if (tombs.teams.includes(incTeam.id)) continue;
       const existing = backendDb.teams.find((t) => t.id === incTeam.id);
       if (!existing) {
         backendDb.teams.push(incTeam);
@@ -247,10 +292,17 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
     }
   }
 
-  // 3. Team Members: merge additively
+  // 3. Team Members: merge additively unless explicitly removed or team deleted
   if (Array.isArray(incoming.teamMembers)) {
     for (const incMember of incoming.teamMembers) {
       if (!incMember || !incMember.id || !incMember.teamId || !incMember.userId) continue;
+      if (
+        tombs.teamMembers.includes(incMember.id) ||
+        tombs.teams.includes(incMember.teamId) ||
+        tombs.users.includes(incMember.userId)
+      ) {
+        continue;
+      }
       const existing = backendDb.teamMembers.find(
         (m) =>
           m.id === incMember.id ||
@@ -274,13 +326,25 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
     }
   }
 
-  // 4. Library Items: merge additively
+  // 4. Library Items: merge additively unless explicitly deleted or team deleted
   if (Array.isArray(incoming.libraryItems)) {
     for (const incItem of incoming.libraryItems) {
       if (!incItem || !incItem.id || !incItem.title) continue;
+      if (
+        tombs.libraryItems.includes(incItem.id) ||
+        (incItem.teamId && tombs.teams.includes(incItem.teamId))
+      ) {
+        continue;
+      }
       const existing = backendDb.libraryItems.find((i) => i.id === incItem.id);
       if (!existing) {
         backendDb.libraryItems.push(incItem);
+        modified = true;
+      } else if (
+        typeof incItem.progressMs === 'number' &&
+        incItem.progressMs > (existing.progressMs || 0)
+      ) {
+        existing.progressMs = incItem.progressMs;
         modified = true;
       }
     }
@@ -290,6 +354,21 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
     saveBackendDb();
   }
   return backendDb;
+}
+
+interface ServerHallMember {
+  id: string;
+  hallId: string;
+  teamId: string;
+  userId: string;
+  displayName: string;
+  photoUrl?: string;
+  role: 'HOST' | 'VIEWER';
+  micEnabled: boolean;
+  cameraEnabled: boolean;
+  isSpeaking: boolean;
+  joinedAt: string;
+  updatedAt: string;
 }
 
 interface ServerHallState {
@@ -302,6 +381,8 @@ interface ServerHallState {
   posterUrl?: string;
   backdropUrl?: string;
   videoUrl?: string;
+  embedUrl?: string;
+  latestFrameDataUrl?: string;
   sourceType: 'DEVICE_LOCAL' | 'DIRECT_URL' | 'CLOUD_VIDEO' | 'SCREEN_SHARE' | 'APP_SHARE' | 'WEBPAGE';
   status: 'LIVE' | 'PAUSED' | 'ENDED';
   isPlaying: boolean;
@@ -312,6 +393,7 @@ interface ServerHallState {
   shareType: 'NONE' | 'SCREEN_SHARE' | 'APP_SHARE' | 'DEVICE_STREAM';
   hostConnected: boolean;
   lastSyncEpochMs: number;
+  breakState?: any;
   startedAt: string;
   updatedAt: string;
   endedAt?: string;
@@ -327,6 +409,7 @@ interface ConnectedClient {
 }
 
 const activeHalls = new Map<string, ServerHallState>();
+const hallMembersMap = new Map<string, ServerHallMember[]>();
 const hallApprovedViewers = new Map<string, Set<string>>();
 const hostDisconnectTimers = new Map<string, NodeJS.Timeout>();
 const processedEventIds = new Set<string>();
@@ -342,11 +425,20 @@ function computeLivePositionMs(hall: ServerHallState): number {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   const httpServer = createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
   const clients = new Set<ConnectedClient>();
+
+  function isClientInTeam(client: ConnectedClient, teamId: string): boolean {
+    if (!teamId) return false;
+    if (client.teamId === teamId) return true;
+    if (!client.userId) return false;
+    const isOwner = backendDb.teams.some((t) => t.id === teamId && t.ownerId === client.userId);
+    if (isOwner) return true;
+    return backendDb.teamMembers.some((m) => m.teamId === teamId && m.userId === client.userId);
+  }
 
   function broadcastAll(payload: unknown, excludeWs?: WebSocket) {
     const message = JSON.stringify(payload);
@@ -360,7 +452,11 @@ async function startServer() {
   function broadcastToTeam(teamId: string, payload: unknown, excludeWs?: WebSocket) {
     const message = JSON.stringify(payload);
     for (const client of clients) {
-      if (client.teamId === teamId && client.ws !== excludeWs && client.ws.readyState === WebSocket.OPEN) {
+      if (
+        isClientInTeam(client, teamId) &&
+        client.ws !== excludeWs &&
+        client.ws.readyState === WebSocket.OPEN
+      ) {
         client.ws.send(message);
       }
     }
@@ -368,8 +464,11 @@ async function startServer() {
 
   function broadcastToHall(hallId: string, payload: unknown, excludeWs?: WebSocket) {
     const message = JSON.stringify(payload);
+    const hall = activeHalls.get(hallId);
     for (const client of clients) {
-      if (client.hallId === hallId && client.ws !== excludeWs && client.ws.readyState === WebSocket.OPEN) {
+      const inHallOrTeam =
+        client.hallId === hallId || (hall ? isClientInTeam(client, hall.teamId) : false);
+      if (inHallOrTeam && client.ws !== excludeWs && client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(message);
       }
     }
@@ -610,12 +709,51 @@ async function startServer() {
       return;
     }
 
+    const tombs = ensureTombstones();
+    if (!tombs.users.includes(userId)) tombs.users.push(userId);
+    for (const m of backendDb.teamMembers) {
+      if (m.userId === userId && !tombs.teamMembers.includes(m.id)) {
+        tombs.teamMembers.push(m.id);
+      }
+    }
     backendDb.users = backendDb.users.filter((u) => u.id !== userId);
     backendDb.teamMembers = backendDb.teamMembers.filter((m) => m.userId !== userId);
     saveBackendDb();
     broadcastAll({ type: 'AUTH_USERS_SYNC', users: backendDb.users });
     broadcastAll({ type: 'TEAMS_STATE_SYNC', teams: backendDb.teams, teamMembers: backendDb.teamMembers });
     res.json({ ok: true, users: backendDb.users, teamMembers: backendDb.teamMembers });
+  });
+
+  // 8b. Individual User App Lock (PIN) Setup & Management (Set from User Profile)
+  app.put('/api/users/:userId/app-lock', (req, res) => {
+    const { userId } = req.params;
+    const callerUserId = String(req.body?.callerUserId || userId).trim();
+    const appLockEnabled = Boolean(req.body?.appLockEnabled);
+    const appLockPin = String(req.body?.appLockPin || '').trim().slice(0, 12);
+
+    if (callerUserId !== userId) {
+      res.status(403).json({ ok: false, error: 'You can only manage your own App Lock PIN.' });
+      return;
+    }
+
+    const target = backendDb.users.find((u) => u.id === userId);
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'User account not found.' });
+      return;
+    }
+
+    if (appLockEnabled && appLockPin.length < 4) {
+      res.status(400).json({ ok: false, error: 'App Lock PIN must be at least 4 characters.' });
+      return;
+    }
+
+    target.appLockPin = appLockEnabled ? appLockPin : '';
+    target.appLockEnabled = appLockEnabled && Boolean(appLockPin);
+    target.updatedAt = new Date().toISOString();
+
+    saveBackendDb();
+    broadcastAll({ type: 'AUTH_USERS_SYNC', users: backendDb.users });
+    res.json({ ok: true, account: target, users: backendDb.users });
   });
 
   // 9. Create Team (Requires Team Name & PIN Number)
@@ -658,6 +796,10 @@ async function startServer() {
       joinedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
+    const tombs = ensureTombstones();
+    tombs.teams = tombs.teams.filter((tid) => tid !== id);
+    tombs.teamMembers = tombs.teamMembers.filter((mid) => mid !== ownerMember.id);
 
     backendDb.teams.push(newTeam);
     backendDb.teamMembers.push(ownerMember);
@@ -720,6 +862,19 @@ async function startServer() {
       return;
     }
 
+    const tombs = ensureTombstones();
+    if (!tombs.teams.includes(teamId)) tombs.teams.push(teamId);
+    for (const m of backendDb.teamMembers) {
+      if (m.teamId === teamId && !tombs.teamMembers.includes(m.id)) {
+        tombs.teamMembers.push(m.id);
+      }
+    }
+    for (const i of backendDb.libraryItems) {
+      if (i.teamId === teamId && !tombs.libraryItems.includes(i.id)) {
+        tombs.libraryItems.push(i.id);
+      }
+    }
+
     backendDb.teams = backendDb.teams.filter((t) => t.id !== teamId);
     backendDb.teamMembers = backendDb.teamMembers.filter((m) => m.teamId !== teamId);
     backendDb.libraryItems = backendDb.libraryItems.filter((i) => i.teamId !== teamId);
@@ -730,7 +885,29 @@ async function startServer() {
     res.json({ ok: true, deletedTeamId: teamId, teams: backendDb.teams, teamMembers: backendDb.teamMembers });
   });
 
-  // 11. Join Team with Team Name & PIN Number
+  // 11. Search Team by exact Team Name & PIN Number (only reveals team if both Name and PIN match)
+  app.post('/api/teams/search', (req, res) => {
+    const teamName = String(req.body?.teamName || '').trim().toLowerCase();
+    const pin = String(req.body?.pin || '').trim();
+
+    if (!teamName || !pin) {
+      res.status(400).json({ ok: false, error: 'Please enter both Team Name and PIN number to search.' });
+      return;
+    }
+
+    const matched = backendDb.teams.find(
+      (t) => t.name.trim().toLowerCase() === teamName && t.pin.trim() === pin
+    );
+    if (!matched) {
+      res.status(404).json({ ok: false, error: 'No team found matching that Team Name and PIN number.' });
+      return;
+    }
+
+    const memberCount = backendDb.teamMembers.filter((m) => m.teamId === matched.id).length;
+    res.json({ ok: true, team: matched, memberCount });
+  });
+
+  // 11b. Join Team with Team Name & PIN Number
   app.post('/api/teams/join', (req, res) => {
     const teamName = String(req.body?.teamName || '').trim().toLowerCase();
     const pin = String(req.body?.pin || '').trim();
@@ -752,6 +929,8 @@ async function startServer() {
     }
 
     const memberId = `${matched.id}_${userId}`;
+    const tombs = ensureTombstones();
+    tombs.teamMembers = tombs.teamMembers.filter((mid) => mid !== memberId);
     if (!backendDb.teamMembers.some((m) => m.id === memberId)) {
       backendDb.teamMembers.push({
         id: memberId,
@@ -855,6 +1034,11 @@ async function startServer() {
       return;
     }
 
+    const tombs = ensureTombstones();
+    if (!tombs.teamMembers.includes(targetMember.id)) {
+      tombs.teamMembers.push(targetMember.id);
+    }
+
     backendDb.teamMembers = backendDb.teamMembers.filter(
       (m) => !(m.teamId === teamId && m.userId === memberUserId)
     );
@@ -863,7 +1047,7 @@ async function startServer() {
     res.json({ ok: true, teams: backendDb.teams, teamMembers: backendDb.teamMembers });
   });
 
-  // 14. Persistent Team Library CRUD API
+  // 14. Persistent Multi-Library CRUD API (Self Library + Separate Library per Team)
   app.get('/api/library', (_req, res) => {
     res.json({ ok: true, libraryItems: backendDb.libraryItems });
   });
@@ -874,17 +1058,70 @@ async function startServer() {
       res.status(400).json({ ok: false, error: 'Invalid library item payload.' });
       return;
     }
-    backendDb.libraryItems = [item, ...backendDb.libraryItems.filter((i) => i.id !== item.id)];
+    const isSelfScope =
+      !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
+    const normalizedItem: ServerLibraryItem = {
+      ...item,
+      teamId: isSelfScope ? '' : item.teamId,
+      libraryScope: isSelfScope ? 'SELF' : 'TEAM',
+    };
+    const tombs = ensureTombstones();
+    tombs.libraryItems = tombs.libraryItems.filter((lid) => lid !== normalizedItem.id);
+    backendDb.libraryItems = [
+      normalizedItem,
+      ...backendDb.libraryItems.filter((i) => i.id !== normalizedItem.id),
+    ];
     saveBackendDb();
     broadcastAll({ type: 'LIBRARY_STATE_SYNC', libraryItems: backendDb.libraryItems });
-    res.json({ ok: true, item, libraryItems: backendDb.libraryItems });
+    res.json({ ok: true, item: normalizedItem, libraryItems: backendDb.libraryItems });
   });
 
   app.delete('/api/library/:itemId', (req, res) => {
     const { itemId } = req.params;
+    const callerUserId = String(req.query.callerUserId || req.body?.callerUserId || '').trim();
+    const target = backendDb.libraryItems.find((i) => i.id === itemId);
+
+    if (target && callerUserId) {
+      const isSelfItem =
+        !target.teamId || target.teamId.startsWith('self_') || target.libraryScope === 'SELF';
+      if (isSelfItem) {
+        if (target.addedById && target.addedById !== callerUserId) {
+          res.status(403).json({
+            ok: false,
+            error: 'Only you can manage (delete) your personal Self Library videos.',
+          });
+          return;
+        }
+      } else {
+        // Team Library item: ONLY Team Owner can manage (delete) Team Library videos
+        const team = backendDb.teams.find((t) => t.id === target.teamId);
+        const callerMember = backendDb.teamMembers.find(
+          (m) => m.teamId === target.teamId && m.userId === callerUserId
+        );
+        const isTeamOwner = Boolean(
+          (team && team.ownerId === callerUserId) || callerMember?.role === 'OWNER'
+        );
+        if (!isTeamOwner) {
+          res.status(403).json({
+            ok: false,
+            error: 'Only the Team Owner can manage (delete) Team Library videos.',
+          });
+          return;
+        }
+      }
+    }
+
+    const tombs = ensureTombstones();
+    if (!tombs.libraryItems.includes(itemId)) {
+      tombs.libraryItems.push(itemId);
+    }
     backendDb.libraryItems = backendDb.libraryItems.filter((i) => i.id !== itemId);
     saveBackendDb();
-    broadcastAll({ type: 'LIBRARY_STATE_SYNC', deletedItemId: itemId, libraryItems: backendDb.libraryItems });
+    broadcastAll({
+      type: 'LIBRARY_STATE_SYNC',
+      deletedItemId: itemId,
+      libraryItems: backendDb.libraryItems,
+    });
     res.json({ ok: true, deletedItemId: itemId, libraryItems: backendDb.libraryItems });
   });
 
@@ -1136,11 +1373,12 @@ async function startServer() {
     if (ytVideoId) {
       const cleanVideoId = ytVideoId.slice(0, 11);
       const canonicalWatchUrl = `https://www.youtube.com/watch?v=${cleanVideoId}`;
-      const ytEmbedUrl = `https://www.youtube.com/embed/${cleanVideoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
+      const ytEmbedUrl = `https://www.youtube.com/embed/${cleanVideoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&fs=1`;
       let ytTitle = `YouTube Video (${cleanVideoId})`;
       try {
         const oembedRes = await fetch(
-          `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalWatchUrl)}&format=json`
+          `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalWatchUrl)}&format=json`,
+          { signal: AbortSignal.timeout(2000) }
         );
         if (oembedRes.ok) {
           const oembed = (await oembedRes.json()) as { title?: string };
@@ -1419,24 +1657,35 @@ async function startServer() {
             client.displayName = msg.displayName || client.displayName;
             client.teamId = msg.teamId || client.teamId;
 
-            // Send active halls for this team with live computed elapsed time
+            // Send active halls for this team (or user's teams) with live computed elapsed time
             const teamHalls: ServerHallState[] = [];
+            let activeMembers: ServerHallMember[] = [];
             for (const hall of activeHalls.values()) {
-              if (hall.teamId === client.teamId && hall.status !== 'ENDED') {
+              if (
+                hall.status !== 'ENDED' &&
+                (hall.teamId === client.teamId || isClientInTeam(client, hall.teamId))
+              ) {
                 teamHalls.push({
                   ...hall,
                   positionMs: computeLivePositionMs(hall),
                 });
+                activeMembers = hallMembersMap.get(hall.id) || [];
               }
             }
-            ws.send(JSON.stringify({ type: 'TEAM_HALLS_SYNC', halls: teamHalls }));
+            ws.send(
+              JSON.stringify({
+                type: 'TEAM_HALLS_SYNC',
+                halls: teamHalls,
+                members: activeMembers,
+              })
+            );
             break;
           }
 
           case 'HALL_CREATE': {
             const hall: ServerHallState = {
               ...msg.hall,
-              status: 'LIVE',
+              status: msg.hall?.status || 'LIVE',
               hostConnected: true,
               lastSyncEpochMs: Date.now(),
               updatedAt: new Date().toISOString(),
@@ -1445,22 +1694,91 @@ async function startServer() {
             if (!hallApprovedViewers.has(hall.id)) {
               hallApprovedViewers.set(hall.id, new Set([hall.hostId]));
             }
+            const existingMembers = hallMembersMap.get(hall.id) || [];
+            const initialMembers: ServerHallMember[] =
+              Array.isArray(msg.members) && msg.members.length > 0
+                ? msg.members
+                : existingMembers.length > 0
+                ? existingMembers
+                : [
+                    {
+                      id: `${hall.id}_${hall.hostId}`,
+                      hallId: hall.id,
+                      teamId: hall.teamId,
+                      userId: hall.hostId,
+                      displayName: hall.hostName,
+                      role: 'HOST',
+                      micEnabled: false,
+                      cameraEnabled: false,
+                      isSpeaking: false,
+                      joinedAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString(),
+                    },
+                  ];
+            hallMembersMap.set(hall.id, initialMembers);
+            hall.viewerCount = Math.max(1, initialMembers.length);
             client.hallId = hall.id;
+            client.teamId = hall.teamId || client.teamId;
             client.role = 'HOST';
-            broadcastToTeam(hall.teamId, { type: 'HALL_UPDATED', hall });
+            broadcastToTeam(hall.teamId, {
+              type: 'HALL_UPDATED',
+              hall,
+              members: initialMembers,
+            });
             break;
           }
 
           case 'HALL_JOIN_SESSION': {
-            const { hallId, userId, role } = msg;
+            const { hallId, userId, displayName, photoUrl, role, micEnabled, cameraEnabled } = msg;
             const hall = activeHalls.get(hallId);
             if (!hall) break;
 
             client.hallId = hallId;
-            client.role = role;
+            client.teamId = hall.teamId || client.teamId;
+            const effectiveUserId = userId || client.userId;
+            const effectiveName = displayName || client.displayName || 'Member';
+            const effectiveRole: 'HOST' | 'VIEWER' =
+              hall.hostId === effectiveUserId || role === 'HOST' ? 'HOST' : 'VIEWER';
+            client.role = effectiveRole;
+
+            if (!hallApprovedViewers.has(hallId)) {
+              hallApprovedViewers.set(hallId, new Set([hall.hostId]));
+            }
+            hallApprovedViewers.get(hallId)!.add(effectiveUserId);
+
+            // Add or update member in hallMembersMap
+            const currentMembers = hallMembersMap.get(hallId) || [];
+            const existingIdx = currentMembers.findIndex((m) => m.userId === effectiveUserId);
+            const nowIso = new Date().toISOString();
+            if (existingIdx >= 0) {
+              currentMembers[existingIdx] = {
+                ...currentMembers[existingIdx],
+                displayName: effectiveName,
+                photoUrl: photoUrl || currentMembers[existingIdx].photoUrl,
+                role: effectiveRole,
+                updatedAt: nowIso,
+              };
+            } else {
+              currentMembers.push({
+                id: `${hallId}_${effectiveUserId}`,
+                hallId,
+                teamId: hall.teamId,
+                userId: effectiveUserId,
+                displayName: effectiveName,
+                photoUrl,
+                role: effectiveRole,
+                micEnabled: Boolean(micEnabled),
+                cameraEnabled: Boolean(cameraEnabled),
+                isSpeaking: false,
+                joinedAt: nowIso,
+                updatedAt: nowIso,
+              });
+            }
+            hallMembersMap.set(hallId, currentMembers);
+            hall.viewerCount = Math.max(1, currentMembers.length);
 
             // If host reconnected within grace period, cancel disconnect timer (Section 37)
-            if (hall.hostId === userId) {
+            if (hall.hostId === effectiveUserId) {
               const timer = hostDisconnectTimers.get(hallId);
               if (timer) {
                 clearTimeout(timer);
@@ -1475,7 +1793,7 @@ async function startServer() {
             }
 
             // LATE JOIN RULE (Section 5):
-            // Never restart or pause the host. Send current live position directly to the newly joined viewer.
+            // Never restart or pause the host. Send current live position and latest presentation frame directly to the newly joined viewer.
             const livePos = computeLivePositionMs(hall);
             ws.send(
               JSON.stringify({
@@ -1484,50 +1802,174 @@ async function startServer() {
                   ...hall,
                   positionMs: livePos,
                 },
+                members: currentMembers,
+                latestFrameDataUrl: hall.latestFrameDataUrl || null,
               })
+            );
+
+            broadcastToHall(hallId, {
+              type: 'HALL_MEMBERS_SYNC',
+              hallId,
+              members: currentMembers,
+              viewerCount: hall.viewerCount,
+            });
+            break;
+          }
+
+          case 'HALL_LEAVE_SESSION': {
+            const { hallId, userId } = msg;
+            const hall = activeHalls.get(hallId);
+            if (!hall) break;
+            const effectiveUserId = userId || client.userId;
+            if (hall.hostId !== effectiveUserId) {
+              const currentMembers = (hallMembersMap.get(hallId) || []).filter(
+                (m) => m.userId !== effectiveUserId
+              );
+              hallMembersMap.set(hallId, currentMembers);
+              hall.viewerCount = Math.max(1, currentMembers.length);
+              broadcastToHall(hallId, {
+                type: 'HALL_MEMBERS_SYNC',
+                hallId,
+                members: currentMembers,
+                viewerCount: hall.viewerCount,
+              });
+            }
+            break;
+          }
+
+          case 'HALL_MEMBER_MEDIA_STATE': {
+            const { hallId, userId, displayName, photoUrl, micEnabled, cameraEnabled, isSpeaking } = msg;
+            const hall = activeHalls.get(hallId);
+            if (!hall) break;
+            // Enforce that each user only modifies their own mic/camera permission state
+            const targetUserId = userId || client.userId;
+            if (!targetUserId) break;
+
+            const currentMembers = hallMembersMap.get(hallId) || [];
+            const idx = currentMembers.findIndex((m) => m.userId === targetUserId);
+            const nowIso = new Date().toISOString();
+            if (idx >= 0) {
+              currentMembers[idx] = {
+                ...currentMembers[idx],
+                ...(typeof micEnabled === 'boolean' ? { micEnabled } : {}),
+                ...(typeof cameraEnabled === 'boolean' ? { cameraEnabled } : {}),
+                ...(typeof isSpeaking === 'boolean' ? { isSpeaking } : {}),
+                updatedAt: nowIso,
+              };
+            } else {
+              currentMembers.push({
+                id: `${hallId}_${targetUserId}`,
+                hallId,
+                teamId: hall.teamId,
+                userId: targetUserId,
+                displayName: displayName || client.displayName || 'Member',
+                photoUrl,
+                role: hall.hostId === targetUserId ? 'HOST' : 'VIEWER',
+                micEnabled: Boolean(micEnabled),
+                cameraEnabled: Boolean(cameraEnabled),
+                isSpeaking: Boolean(isSpeaking),
+                joinedAt: nowIso,
+                updatedAt: nowIso,
+              });
+            }
+            hallMembersMap.set(hallId, currentMembers);
+            broadcastToHall(hallId, {
+              type: 'HALL_MEMBERS_SYNC',
+              hallId,
+              members: currentMembers,
+              viewerCount: hall.viewerCount,
+            });
+            break;
+          }
+
+          case 'HALL_MEMBER_CAM_FRAME': {
+            if (msg.hallId && msg.userId && typeof msg.frameDataUrl === 'string') {
+              broadcastToHall(
+                msg.hallId,
+                {
+                  type: 'HALL_MEMBER_CAM_FRAME',
+                  hallId: msg.hallId,
+                  userId: msg.userId,
+                  frameDataUrl: msg.frameDataUrl,
+                },
+                ws
+              );
+            }
+            break;
+          }
+
+          case 'HALL_VOICE_CHUNK': {
+            if (msg.hallId && msg.userId && typeof msg.audioDataUrl === 'string') {
+              broadcastToHall(
+                msg.hallId,
+                {
+                  type: 'HALL_VOICE_CHUNK',
+                  hallId: msg.hallId,
+                  userId: msg.userId,
+                  audioDataUrl: msg.audioDataUrl,
+                },
+                ws
+              );
+            }
+            break;
+          }
+
+          case 'HALL_UPDATE':
+          case 'HOST_PLAYBACK_UPDATE': {
+            const patch = msg.patch || msg;
+            const hallId = msg.hallId || patch.hallId;
+            const userId = msg.userId || patch.userId || client.userId;
+            const hall = activeHalls.get(hallId);
+            // Enforce Section 4: ONLY HOST controls playback (play/pause/break/skip/speed/movie)
+            if (!hall || hall.hostId !== userId) {
+              break;
+            }
+            if (typeof patch.isPlaying === 'boolean') hall.isPlaying = patch.isPlaying;
+            if (typeof patch.positionMs === 'number') hall.positionMs = patch.positionMs;
+            if (typeof patch.durationMs === 'number' && patch.durationMs > 0) hall.durationMs = patch.durationMs;
+            if (typeof patch.playbackSpeed === 'number') hall.playbackSpeed = patch.playbackSpeed;
+            if (patch.status) hall.status = patch.status;
+            if (patch.shareType) hall.shareType = patch.shareType;
+            if (patch.title) hall.title = patch.title;
+            if (patch.videoUrl !== undefined) hall.videoUrl = patch.videoUrl;
+            if (patch.embedUrl !== undefined) hall.embedUrl = patch.embedUrl;
+            if (patch.posterUrl !== undefined) hall.posterUrl = patch.posterUrl;
+            if (patch.backdropUrl !== undefined) hall.backdropUrl = patch.backdropUrl;
+            if (patch.libraryItemId !== undefined) hall.libraryItemId = patch.libraryItemId;
+            if (patch.sourceType) hall.sourceType = patch.sourceType;
+            if (patch.breakState !== undefined) hall.breakState = patch.breakState;
+            hall.lastSyncEpochMs = Date.now();
+            hall.updatedAt = new Date().toISOString();
+
+            broadcastToTeam(
+              hall.teamId,
+              {
+                type: 'HALL_UPDATED',
+                hall: {
+                  ...hall,
+                  positionMs: computeLivePositionMs(hall),
+                },
+              },
+              ws
             );
             break;
           }
 
-          case 'HOST_PLAYBACK_UPDATE': {
-            const { hallId, userId, isPlaying, positionMs, durationMs, playbackSpeed, status, shareType, title, videoUrl, sourceType } = msg;
-            const hall = activeHalls.get(hallId);
-            // Enforce Section 4: ONLY HOST controls playback
-            if (!hall || hall.hostId !== userId) {
-              break;
-            }
-            if (typeof isPlaying === 'boolean') hall.isPlaying = isPlaying;
-            if (typeof positionMs === 'number') hall.positionMs = positionMs;
-            if (typeof durationMs === 'number' && durationMs > 0) hall.durationMs = durationMs;
-            if (typeof playbackSpeed === 'number') hall.playbackSpeed = playbackSpeed;
-            if (status) hall.status = status;
-            if (shareType) hall.shareType = shareType;
-            if (title) hall.title = title;
-            if (videoUrl !== undefined) hall.videoUrl = videoUrl;
-            if (sourceType) hall.sourceType = sourceType;
-            hall.lastSyncEpochMs = Date.now();
-            hall.updatedAt = new Date().toISOString();
-
-            broadcastToTeam(hall.teamId, {
-              type: 'HALL_UPDATED',
-              hall: {
-                ...hall,
-                positionMs: computeLivePositionMs(hall),
-              },
-            }, ws);
-            break;
-          }
-
+          case 'JOIN_REQUEST_CREATE':
           case 'JOIN_REQUEST_SENT': {
-            broadcastToTeam(msg.request.teamId, {
-              type: 'JOIN_REQUEST_RECEIVED',
-              request: msg.request,
-            });
+            const req = msg.request;
+            if (req && req.teamId) {
+              broadcastToTeam(req.teamId, {
+                type: 'JOIN_REQUEST_RECEIVED',
+                request: req,
+              });
+            }
             break;
           }
 
           case 'JOIN_REQUEST_DECISION': {
             const { request, decision, hostId } = msg;
+            if (!request) break;
             const hall = activeHalls.get(request.hallId);
             if (hall && hall.hostId !== hostId) {
               break; // Only host can accept/decline
@@ -1538,13 +1980,33 @@ async function startServer() {
               }
               hallApprovedViewers.get(request.hallId)!.add(request.requesterId);
               if (hall) {
-                hall.viewerCount = Math.max(1, hallApprovedViewers.get(request.hallId)!.size);
+                const currentMembers = hallMembersMap.get(request.hallId) || [];
+                if (!currentMembers.some((m) => m.userId === request.requesterId)) {
+                  const nowIso = new Date().toISOString();
+                  currentMembers.push({
+                    id: `${request.hallId}_${request.requesterId}`,
+                    hallId: request.hallId,
+                    teamId: hall.teamId,
+                    userId: request.requesterId,
+                    displayName: request.requesterName || 'Member',
+                    photoUrl: request.requesterPhotoUrl,
+                    role: 'VIEWER',
+                    micEnabled: false,
+                    cameraEnabled: false,
+                    isSpeaking: false,
+                    joinedAt: nowIso,
+                    updatedAt: nowIso,
+                  });
+                  hallMembersMap.set(request.hallId, currentMembers);
+                }
+                hall.viewerCount = Math.max(1, currentMembers.length);
               }
             }
             broadcastToTeam(request.teamId, {
               type: 'JOIN_REQUEST_UPDATED',
               request: { ...request, status: decision },
               hall: hall ? { ...hall, positionMs: computeLivePositionMs(hall) } : undefined,
+              members: hallMembersMap.get(request.hallId) || [],
             });
             break;
           }
@@ -1574,14 +2036,38 @@ async function startServer() {
           }
 
           case 'PRESENTATION_FRAME': {
-            // Realtime presentation preview stream for local device / screen share
-            broadcastToHall(msg.hallId, {
-              type: 'PRESENTATION_FRAME',
-              hallId: msg.hallId,
-              frameDataUrl: msg.frameDataUrl,
-              positionMs: msg.positionMs,
-              isPlaying: msg.isPlaying,
-            }, ws);
+            const hall = activeHalls.get(msg.hallId);
+            if (hall && msg.userId && hall.hostId !== msg.userId) {
+              break;
+            }
+            if (hall) {
+              if (typeof msg.frameDataUrl === 'string') {
+                hall.latestFrameDataUrl = msg.frameDataUrl;
+              }
+              if (typeof msg.positionMs === 'number') {
+                hall.positionMs = msg.positionMs;
+                hall.lastSyncEpochMs = Date.now();
+              }
+              if (typeof msg.durationMs === 'number' && msg.durationMs > 0) {
+                hall.durationMs = msg.durationMs;
+              }
+              if (typeof msg.isPlaying === 'boolean') {
+                hall.isPlaying = msg.isPlaying;
+              }
+            }
+            // Realtime presentation preview stream for local device / screen share / host video feed
+            broadcastToHall(
+              msg.hallId,
+              {
+                type: 'PRESENTATION_FRAME',
+                hallId: msg.hallId,
+                frameDataUrl: msg.frameDataUrl,
+                positionMs: msg.positionMs,
+                durationMs: msg.durationMs,
+                isPlaying: msg.isPlaying,
+              },
+              ws
+            );
             break;
           }
 
@@ -1612,12 +2098,15 @@ async function startServer() {
           }
 
           case 'AUTH_USERS_SYNC': {
+            if (Array.isArray(msg.users)) {
+              syncBackendState({ users: msg.users });
+            }
             for (const c of clients) {
               if (c.ws !== ws && c.ws.readyState === WebSocket.OPEN) {
                 c.ws.send(
                   JSON.stringify({
                     type: 'AUTH_USERS_SYNC',
-                    users: msg.users,
+                    users: backendDb.users,
                   })
                 );
               }
@@ -1626,13 +2115,34 @@ async function startServer() {
           }
 
           case 'TEAMS_STATE_SYNC': {
+            syncBackendState({
+              teams: Array.isArray(msg.teams) ? msg.teams : undefined,
+              teamMembers: Array.isArray(msg.teamMembers) ? msg.teamMembers : undefined,
+            });
             for (const c of clients) {
               if (c.ws !== ws && c.ws.readyState === WebSocket.OPEN) {
                 c.ws.send(
                   JSON.stringify({
                     type: 'TEAMS_STATE_SYNC',
-                    teams: msg.teams,
-                    teamMembers: msg.teamMembers,
+                    teams: backendDb.teams,
+                    teamMembers: backendDb.teamMembers,
+                  })
+                );
+              }
+            }
+            break;
+          }
+
+          case 'LIBRARY_STATE_SYNC': {
+            if (Array.isArray(msg.libraryItems)) {
+              syncBackendState({ libraryItems: msg.libraryItems });
+            }
+            for (const c of clients) {
+              if (c.ws !== ws && c.ws.readyState === WebSocket.OPEN) {
+                c.ws.send(
+                  JSON.stringify({
+                    type: 'LIBRARY_STATE_SYNC',
+                    libraryItems: backendDb.libraryItems,
                   })
                 );
               }

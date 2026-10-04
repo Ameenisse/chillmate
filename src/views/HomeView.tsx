@@ -3,9 +3,11 @@ import {
   AppWindow,
   Check,
   Clock,
+  Crown,
   Film,
   HardDrive,
   Link2,
+  Lock,
   Play,
   Radio,
   Trash2,
@@ -32,10 +34,17 @@ export const HomeView: React.FC<HomeViewProps> = ({
 }) => {
   const {
     currentUser,
+    teams,
     activeHall,
     isCurrentUserHost,
     isApprovedInHall,
-    libraryItems,
+    allAccessibleLibraryItems,
+    selfLibraryItems,
+    getTeamLibraryItems,
+    canDeleteLibraryItem,
+    isOwnerOfTeam,
+    setActiveLibraryScope,
+    selectTeam,
     setSelectedLibraryItem,
     deleteLibraryItem,
     joinRequests,
@@ -55,21 +64,51 @@ export const HomeView: React.FC<HomeViewProps> = ({
     ? joinRequests.filter((r) => r.hallId === activeHall.id && r.status === 'PENDING')
     : [];
 
-  const continueWatching = libraryItems.filter((i) => (i.progressMs || 0) > 0);
-  const recentlyAdded = libraryItems;
-  const moviesRow = libraryItems.filter((i) => i.category === 'MOVIES');
-  const videosRow = libraryItems.filter((i) => i.category === 'VIDEOS' || i.category === 'RECENTLY_ADDED');
+  const continueWatching = allAccessibleLibraryItems.filter((i) => (i.progressMs || 0) > 0);
+  const moviesRow = allAccessibleLibraryItems.filter((i) => i.category === 'MOVIES');
+  const videosRow = allAccessibleLibraryItems.filter((i) => i.category === 'VIDEOS' || i.category === 'RECENTLY_ADDED');
 
-  const renderPosterRow = (title: string, items: LibraryItem[]) => {
+  const renderPosterRow = (
+    title: string,
+    items: LibraryItem[],
+    options?: {
+      badgeText?: string;
+      isSelfRow?: boolean;
+      teamId?: string;
+      isTeamOwner?: boolean;
+    }
+  ) => {
     if (items.length === 0) return null;
     return (
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base sm:text-lg font-semibold text-zinc-100 tracking-tight">
-            {title}
-          </h2>
+      <section className="space-y-3" key={title}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {options?.isSelfRow && <Lock className="w-4 h-4 text-emerald-400" />}
+            {options?.teamId &&
+              (options.isTeamOwner ? (
+                <Crown className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Users className="w-4 h-4 text-rose-400" />
+              ))}
+            <h2 className="text-base sm:text-lg font-semibold text-zinc-100 tracking-tight">
+              {title}
+            </h2>
+            {options?.badgeText && (
+              <span className="px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-[10px] font-medium text-zinc-400">
+                {options.badgeText}
+              </span>
+            )}
+          </div>
           <button
-            onClick={() => onNavigateTab('LIBRARY')}
+            onClick={() => {
+              if (options?.isSelfRow) {
+                setActiveLibraryScope('SELF');
+              } else if (options?.teamId) {
+                selectTeam(options.teamId);
+                setActiveLibraryScope(options.teamId);
+              }
+              onNavigateTab('LIBRARY');
+            }}
             className="text-xs font-medium text-zinc-400 hover:text-zinc-100 transition-colors"
           >
             See All
@@ -82,6 +121,11 @@ export const HomeView: React.FC<HomeViewProps> = ({
               item.progressMs && item.durationMs
                 ? Math.min(100, Math.round((item.progressMs / item.durationMs) * 100))
                 : 0;
+            const isSelfItem = item.libraryScope === 'SELF' || item.teamId === 'SELF';
+            const itemTeam = !isSelfItem
+              ? teams.find((t) => t.id === (item.libraryScope || item.teamId))
+              : undefined;
+            const canDelete = canDeleteLibraryItem(item);
 
             return (
               <div
@@ -98,17 +142,41 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void deleteLibraryItem(item.id);
-                    }}
-                    title="Delete from Library"
-                    className="absolute top-2.5 right-2.5 min-h-[32px] min-w-[32px] rounded-xl bg-black/75 hover:bg-rose-600 text-zinc-300 hover:text-white border border-white/10 flex items-center justify-center transition-colors z-10"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {/* Library Scope Tag */}
+                  <div className="absolute top-2.5 left-2.5 px-2 py-1 rounded-lg bg-black/75 backdrop-blur-md border border-white/10 text-[10px] font-semibold flex items-center gap-1">
+                    {isSelfItem ? (
+                      <>
+                        <Lock className="w-3 h-3 text-emerald-400" />
+                        <span className="text-emerald-300">Self</span>
+                      </>
+                    ) : (
+                      <>
+                        <Users className="w-3 h-3 text-rose-400" />
+                        <span className="text-zinc-200 truncate max-w-[90px]">
+                          {itemTeam?.name || 'Team'}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Delete button (Self owner OR Team Owner only) */}
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteLibraryItem(item.id);
+                      }}
+                      title={
+                        isSelfItem
+                          ? 'Delete from your Self Library'
+                          : 'Team Owner: Delete from Team Library'
+                      }
+                      className="absolute top-2.5 right-2.5 min-h-[32px] min-w-[32px] rounded-xl bg-black/75 hover:bg-rose-600 text-zinc-300 hover:text-white border border-white/10 flex items-center justify-center transition-colors z-10"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
 
                   <div className="absolute bottom-3 left-3 right-3">
                     <h3 className="text-sm font-semibold text-zinc-100 truncate">
@@ -376,12 +444,28 @@ export const HomeView: React.FC<HomeViewProps> = ({
         )}
       </section>
 
+      {/* Multi-Library Rows: Self Library (Only You) + Each Team Library (Team Members Only, Owner Manages) */}
+      {renderPosterRow('My Self Library', selfLibraryItems, {
+        badgeText: 'Private · Only you can see',
+        isSelfRow: true,
+      })}
+
+      {teams.map((team) => {
+        const teamItems = getTeamLibraryItems(team.id);
+        const isOwner = isOwnerOfTeam(team.id);
+        return renderPosterRow(`${team.name} Library`, teamItems, {
+          badgeText: isOwner
+            ? 'Team Library · You are Owner (Can Delete)'
+            : 'Team Library · Members Only',
+          teamId: team.id,
+          isTeamOwner: isOwner,
+        });
+      })}
+
       {/* Horizontal / Grid Streaming Rows (Section 6) */}
       {renderPosterRow('Continue Watching', continueWatching)}
-      {renderPosterRow('Recently Added', recentlyAdded)}
       {renderPosterRow('Movies', moviesRow)}
       {renderPosterRow('Videos', videosRow)}
-      {renderPosterRow('Watch Again', libraryItems.slice().reverse())}
     </div>
   );
 };
