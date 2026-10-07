@@ -42,6 +42,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ onOpenAndroidSource })
 
   const [displayNameInput, setDisplayNameInput] = useState(currentUser.displayName);
   const [savedProfile, setSavedProfile] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   const existingPin = (currentAccount?.appLockPin || currentUser.appLockPin || '').trim();
   const isPinCurrentlyEnabled = Boolean(
@@ -66,7 +67,14 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ onOpenAndroidSource })
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    await updateUserProfile(displayNameInput);
+    setProfileError(null);
+    const res = await updateUserProfile(displayNameInput);
+    if (!res.ok) {
+      setProfileError(
+        res.error || 'Username is already taken. Each user must have a unique username.'
+      );
+      return;
+    }
     setSavedProfile(true);
     setTimeout(() => setSavedProfile(false), 1800);
   };
@@ -221,16 +229,27 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ onOpenAndroidSource })
           </div>
 
           <div>
-            <label className="block text-xs text-zinc-400 mb-1.5">Display Name</label>
+            <label className="block text-xs text-zinc-400 mb-1.5">
+              Unique Username / Display Name
+            </label>
             <input
               type="text"
               required
               maxLength={80}
               value={displayNameInput}
-              onChange={(e) => setDisplayNameInput(e.target.value)}
+              onChange={(e) => {
+                setProfileError(null);
+                setDisplayNameInput(e.target.value);
+              }}
               className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
             />
           </div>
+
+          {profileError && (
+            <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 font-medium">
+              {profileError}
+            </div>
+          )}
 
           <button
             type="submit"

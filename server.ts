@@ -217,7 +217,7 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
   let modified = false;
   const tombs = ensureTombstones();
 
-  // 1. Users: merge additively unless explicitly deleted
+  // 1. Users: merge additively unless explicitly deleted (with duplicate username & email protection)
   if (Array.isArray(incoming.users)) {
     for (const incUser of incoming.users) {
       if (!incUser || !incUser.id || !incUser.email) continue;
@@ -226,8 +226,16 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
         (u) => u.id === incUser.id || u.email.toLowerCase() === incUser.email.toLowerCase()
       );
       if (existingIdx === -1) {
-        backendDb.users.push(incUser);
-        modified = true;
+        const incNameNorm = (incUser.displayName || '').trim().toLowerCase();
+        const nameTaken =
+          incNameNorm &&
+          backendDb.users.some(
+            (u) => (u.displayName || '').trim().toLowerCase() === incNameNorm
+          );
+        if (!nameTaken) {
+          backendDb.users.push(incUser);
+          modified = true;
+        }
       } else {
         const cur = backendDb.users[existingIdx];
         const incTime = incUser.updatedAt ? Date.parse(incUser.updatedAt) : 0;
@@ -235,8 +243,14 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
         const isIncomingNewer = incTime > curTime;
 
         if (incUser.displayName && incUser.displayName !== cur.displayName && isIncomingNewer) {
-          cur.displayName = incUser.displayName;
-          modified = true;
+          const candidateNorm = incUser.displayName.trim().toLowerCase();
+          const conflictUser = backendDb.users.find(
+            (u) => u.id !== cur.id && (u.displayName || '').trim().toLowerCase() === candidateNorm
+          );
+          if (!conflictUser) {
+            cur.displayName = incUser.displayName.trim();
+            modified = true;
+          }
         }
         if (incUser.photoUrl && incUser.photoUrl !== cur.photoUrl && isIncomingNewer) {
           cur.photoUrl = incUser.photoUrl;
@@ -266,19 +280,27 @@ function syncBackendState(incoming: Partial<PersistentBackendDatabase>): Persist
     }
   }
 
-  // 2. Teams: merge additively unless explicitly deleted
+  // 2. Teams: merge additively unless explicitly deleted (with unique Team Name duplicate protection)
   if (Array.isArray(incoming.teams)) {
     for (const incTeam of incoming.teams) {
       if (!incTeam || !incTeam.id || !incTeam.name) continue;
       if (tombs.teams.includes(incTeam.id)) continue;
-      const existing = backendDb.teams.find((t) => t.id === incTeam.id);
+      const cleanIncTeamName = incTeam.name.trim().toLowerCase();
+      const existing = backendDb.teams.find(
+        (t) => t.id === incTeam.id || t.name.trim().toLowerCase() === cleanIncTeamName
+      );
       if (!existing) {
         backendDb.teams.push(incTeam);
         modified = true;
-      } else {
+      } else if (existing.id === incTeam.id) {
         if (incTeam.name && incTeam.name !== existing.name) {
-          existing.name = incTeam.name;
-          modified = true;
+          const nameTakenByOther = backendDb.teams.some(
+            (t) => t.id !== existing.id && t.name.trim().toLowerCase() === cleanIncTeamName
+          );
+          if (!nameTakenByOther) {
+            existing.name = incTeam.name.trim();
+            modified = true;
+          }
         }
         if (incTeam.pin && incTeam.pin !== existing.pin) {
           existing.pin = incTeam.pin;
@@ -558,6 +580,17 @@ async function startServer() {
       res.status(409).json({ ok: false, error: 'An account with this email already exists. Please Sign In.' });
       return;
     }
+    if (
+      backendDb.users.some(
+        (u) => (u.displayName || '').trim().toLowerCase() === displayName.toLowerCase()
+      )
+    ) {
+      res.status(409).json({
+        ok: false,
+        error: `Username "${displayName}" is already taken. Each user must have a unique username.`,
+      });
+      return;
+    }
 
     const newAccount: ServerUserAccount = {
       id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -597,6 +630,18 @@ async function startServer() {
     const existing = backendDb.users.find((u) => u.email.toLowerCase() === email);
     if (existing) {
       res.json({ ok: true, account: existing, users: backendDb.users });
+      return;
+    }
+
+    if (
+      backendDb.users.some(
+        (u) => (u.displayName || '').trim().toLowerCase() === displayName.toLowerCase()
+      )
+    ) {
+      res.status(409).json({
+        ok: false,
+        error: `Username "${displayName}" is already taken by another user. Please choose a unique username.`,
+      });
       return;
     }
 
@@ -756,7 +801,60 @@ async function startServer() {
     res.json({ ok: true, account: target, users: backendDb.users });
   });
 
-  // 9. Create Team (Requires Team Name & PIN Number)
+  // 8c. Update User Profile (with unique username duplicate protection)
+  app.put('/api/users/:userId/profile', (req, res) => {
+    const { userId } = req.params;
+    const displayName = String(req.body?.displayName || '').trim().slice(0, 80);
+    const photoUrl = req.body?.photoUrl ? String(req.body.photoUrl).slice(0, 1024) : undefined;
+
+    if (!displayName) {
+      res.status(400).json({ ok: false, error: 'Username cannot be empty.' });
+      return;
+    }
+
+    const target = backendDb.users.find((u) => u.id === userId);
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'User account not found.' });
+      return;
+    }
+
+    const duplicateUser = backendDb.users.find(
+      (u) => u.id !== userId && (u.displayName || '').trim().toLowerCase() === displayName.toLowerCase()
+    );
+    if (duplicateUser) {
+      res.status(409).json({
+        ok: false,
+        error: `Username "${displayName}" is already taken. Each user must have a unique username.`,
+      });
+      return;
+    }
+
+    target.displayName = displayName;
+    if (photoUrl !== undefined) {
+      target.photoUrl = photoUrl;
+    }
+    target.updatedAt = new Date().toISOString();
+
+    for (const m of backendDb.teamMembers) {
+      if (m.userId === userId) {
+        m.displayName = displayName;
+        if (photoUrl !== undefined) m.photoUrl = photoUrl;
+        m.updatedAt = new Date().toISOString();
+      }
+    }
+
+    saveBackendDb();
+    broadcastAll({ type: 'AUTH_USERS_SYNC', users: backendDb.users });
+    broadcastAll({ type: 'TEAMS_STATE_SYNC', teams: backendDb.teams, teamMembers: backendDb.teamMembers });
+    res.json({
+      ok: true,
+      account: target,
+      users: backendDb.users,
+      teamMembers: backendDb.teamMembers,
+    });
+  });
+
+  // 9. Create Team (Requires Unique Team Name & PIN Number)
   app.post('/api/teams', (req, res) => {
     const name = String(req.body?.name || '').trim().slice(0, 80);
     const pin = String(req.body?.pin || '').trim().slice(0, 20);
@@ -768,6 +866,17 @@ async function startServer() {
 
     if (!name || !pin || !ownerId) {
       res.status(400).json({ ok: false, error: 'Team Name, PIN number, and Owner ID are required.' });
+      return;
+    }
+
+    const duplicateTeam = backendDb.teams.find(
+      (t) => t.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (duplicateTeam) {
+      res.status(409).json({
+        ok: false,
+        error: `Team name "${name}" is already taken. Every team must have a unique name.`,
+      });
       return;
     }
 
@@ -831,6 +940,17 @@ async function startServer() {
 
     if (!name || !pin) {
       res.status(400).json({ ok: false, error: 'Both Team Name and PIN number are required.' });
+      return;
+    }
+
+    const duplicateTeam = backendDb.teams.find(
+      (t) => t.id !== teamId && t.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (duplicateTeam) {
+      res.status(409).json({
+        ok: false,
+        error: `Team name "${name}" is already in use by another team. Every team must have a unique name.`,
+      });
       return;
     }
 

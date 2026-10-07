@@ -54,6 +54,7 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamPin, setNewTeamPin] = useState('');
   const [newTeamDesc, setNewTeamDesc] = useState('');
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Edit Team Name & PIN fields (for Team Owner)
   const [editTeamName, setEditTeamName] = useState('');
@@ -100,12 +101,24 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
 
   const handleCreateTeam = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCreateError(null);
     if (!newTeamName.trim() || !newTeamPin.trim()) return;
-    await createTeam(newTeamName, newTeamPin, newTeamDesc);
+    const res = await createTeam(newTeamName, newTeamPin, newTeamDesc);
+    if (!res.ok) {
+      setCreateError(
+        res.error || 'Team name is already taken. Every team must have a unique name.'
+      );
+      return;
+    }
     setNewTeamName('');
     setNewTeamPin('');
     setNewTeamDesc('');
+    setCreateError(null);
     setShowCreateModal(false);
+    if (res.team) {
+      setJoinSuccessBanner(`Created unique team "${res.team.name}"!`);
+      setTimeout(() => setJoinSuccessBanner(null), 3500);
+    }
   };
 
   const handleSaveTeamCredentials = async (e: React.FormEvent) => {
@@ -593,13 +606,16 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
             <form onSubmit={handleCreateTeam} className="space-y-4">
               <div>
                 <label className="block text-xs text-zinc-400 mb-1">
-                  Team Name (Required)
+                  Team Name (Required · Must Be Unique)
                 </label>
                 <input
                   type="text"
                   required
                   value={newTeamName}
-                  onChange={(e) => setNewTeamName(e.target.value)}
+                  onChange={(e) => {
+                    setCreateError(null);
+                    setNewTeamName(e.target.value);
+                  }}
                   placeholder="e.g. Weekend Cinema Squad"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
                 />
@@ -629,6 +645,11 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
                   className="w-full px-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
                 />
               </div>
+              {createError && (
+                <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 font-medium">
+                  {createError}
+                </div>
+              )}
               <button
                 type="submit"
                 className="w-full min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white"

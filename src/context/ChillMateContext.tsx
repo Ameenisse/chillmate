@@ -103,7 +103,10 @@ interface ChillMateContextValue {
   signInWithGoogle: () => Promise<void>;
   signOutUser: () => Promise<void>;
   switchDemoIdentity: (memberUserId: string) => void;
-  updateUserProfile: (displayName: string, photoUrl?: string) => Promise<void>;
+  updateUserProfile: (
+    displayName: string,
+    photoUrl?: string
+  ) => Promise<{ ok: boolean; error?: string }>;
 
   // Individual App Lock System (PIN) per user
   isAppLocked: boolean;
@@ -118,7 +121,11 @@ interface ChillMateContextValue {
   teams: Team[];
   activeTeam: Team;
   selectTeam: (teamId: string) => void;
-  createTeam: (name: string, pin: string, description: string) => Promise<Team>;
+  createTeam: (
+    name: string,
+    pin: string,
+    description: string
+  ) => Promise<{ ok: boolean; error?: string; team?: Team }>;
   updateTeamCredentials: (
     teamId: string,
     name: string,
@@ -283,7 +290,7 @@ interface ChillMateContextValue {
 
 const ChillMateContext = createContext<ChillMateContextValue | null>(null);
 
-const STORAGE_SESSION_KEY = 'chillmate_auth_session_v1';
+const STORAGE_SESSION_KEY = 'chillmate_device_auth_session_v2';
 const STORAGE_USERS_KEY = 'chillmate_users_registry_v2';
 const STORAGE_TEAMS_KEY = 'chillmate_teams_v2';
 const STORAGE_TEAM_MEMBERS_KEY = 'chillmate_team_members_v2';
@@ -384,21 +391,49 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     try {
       const saved = localStorage.getItem(STORAGE_SESSION_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved) as { userId?: string; signedOutExplicitly?: boolean };
-        if (parsed?.signedOutExplicitly) return null;
-        if (parsed?.userId) return parsed.userId;
+        const parsed = JSON.parse(saved) as {
+          userId?: string;
+          explicitlyAuthenticatedOnDevice?: boolean;
+        };
+        if (parsed?.explicitlyAuthenticatedOnDevice && parsed?.userId) {
+          return parsed.userId;
+        }
       }
     } catch {
       // ignore
     }
-    // Default to primary approved user so if Individual App Lock Screen is not enabled, the app opens directly
-    return 'user_ameen';
+    // Never auto-open anyone's user account! Every device must explicitly Sign In first.
+    return null;
+  });
+
+  const [sessionEmail, setSessionEmail] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as {
+          email?: string;
+          explicitlyAuthenticatedOnDevice?: boolean;
+        };
+        if (parsed?.explicitlyAuthenticatedOnDevice && parsed?.email) {
+          return parsed.email.toLowerCase();
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return '';
   });
 
   const currentAccount = useMemo(() => {
-    if (!sessionUserId) return null;
-    return registeredUsers.find((u) => u.id === sessionUserId) || null;
-  }, [registeredUsers, sessionUserId]);
+    if (!sessionUserId && !sessionEmail) return null;
+    return (
+      registeredUsers.find(
+        (u) =>
+          (sessionUserId && u.id === sessionUserId) ||
+          (sessionEmail && u.email.toLowerCase() === sessionEmail)
+      ) || null
+    );
+  }, [registeredUsers, sessionUserId, sessionEmail]);
 
   const isAuthenticated = useMemo(
     () => Boolean(currentAccount && currentAccount.accountStatus === 'APPROVED'),
@@ -416,16 +451,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const [currentUser, setCurrentUser] = useState<UserProfile>({
-    id: 'user_ameen',
-    email: SUPER_ADMIN_EMAIL,
-    displayName: 'Ameen',
-    status: 'ONLINE',
+    id: '',
+    email: '',
+    displayName: 'Guest',
+    status: 'OFFLINE',
     activeTeamId: '',
-    systemRole: 'SUPER_ADMIN',
-    accountStatus: 'APPROVED',
+    systemRole: 'USER',
+    accountStatus: 'PENDING',
     authSource: 'EMAIL',
-    createdAt: '2026-09-01T10:00:00.000Z',
-    updatedAt: new Date().toISOString(),
+    createdAt: '',
+    updatedAt: '',
   });
 
   const [teams, setTeams] = useState<Team[]>(() => {
@@ -637,7 +672,23 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Sync currentAccount -> currentUser whenever currentAccount changes
   useEffect(() => {
-    if (!currentAccount) return;
+    if (!currentAccount) {
+      setCurrentUser({
+        id: '',
+        email: '',
+        displayName: 'Guest',
+        status: 'OFFLINE',
+        activeTeamId: '',
+        systemRole: 'USER',
+        accountStatus: 'PENDING',
+        authSource: 'EMAIL',
+        appLockPin: '',
+        appLockEnabled: false,
+        createdAt: '',
+        updatedAt: '',
+      });
+      return;
+    }
     const isEnabled = currentAccount.appLockEnabled === true && Boolean((currentAccount.appLockPin || '').trim());
     setCurrentUser((prev) => ({
       ...prev,
@@ -645,6 +696,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       email: currentAccount.email,
       displayName: currentAccount.displayName,
       photoUrl: currentAccount.photoUrl || prev.photoUrl,
+      status: 'ONLINE',
       systemRole: currentAccount.systemRole,
       accountStatus: currentAccount.accountStatus,
       authSource: currentAccount.authSource,
@@ -721,10 +773,21 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       } else if (e.key === STORAGE_SESSION_KEY) {
         if (!e.newValue) {
           setSessionUserId(null);
+          setSessionEmail('');
         } else {
           try {
-            const parsed = JSON.parse(e.newValue) as { userId?: string };
-            setSessionUserId(parsed?.userId || null);
+            const parsed = JSON.parse(e.newValue) as {
+              userId?: string;
+              email?: string;
+              explicitlyAuthenticatedOnDevice?: boolean;
+            };
+            if (parsed?.explicitlyAuthenticatedOnDevice && parsed?.userId) {
+              setSessionUserId(parsed.userId);
+              setSessionEmail((parsed.email || '').toLowerCase());
+            } else {
+              setSessionUserId(null);
+              setSessionEmail('');
+            }
           } catch {
             // ignore
           }
@@ -1228,26 +1291,20 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const persistSessionUser = useCallback((userId: string | null, email?: string) => {
     setSessionUserId(userId);
+    setSessionEmail((email || '').toLowerCase());
     try {
       if (userId) {
         localStorage.setItem(
           STORAGE_SESSION_KEY,
           JSON.stringify({
             userId,
-            email: email || '',
-            signedOutExplicitly: false,
+            email: (email || '').toLowerCase(),
+            explicitlyAuthenticatedOnDevice: true,
             savedAt: new Date().toISOString(),
           })
         );
       } else {
-        localStorage.setItem(
-          STORAGE_SESSION_KEY,
-          JSON.stringify({
-            userId: null,
-            signedOutExplicitly: true,
-            savedAt: new Date().toISOString(),
-          })
-        );
+        localStorage.removeItem(STORAGE_SESSION_KEY);
       }
     } catch {
       // ignore
@@ -1424,6 +1481,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }
 
+      const duplicateUsername = registeredUsers.find(
+        (u) => (u.displayName || '').trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      if (duplicateUsername) {
+        return {
+          ok: false,
+          error: `Username "${cleanName}" is already taken. Each user must have a unique username.`,
+        };
+      }
+
       const newAccount: RegisteredUserAccount = {
         id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         email: cleanEmail,
@@ -1493,6 +1560,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           persistSessionUser(data.account.id, data.account.email);
           return { ok: true, account: data.account as RegisteredUserAccount };
         }
+        if (!res.ok && data?.error) {
+          return { ok: false, error: String(data.error) };
+        }
       } catch {
         // Fallback below
       }
@@ -1513,6 +1583,17 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (existing) {
         persistSessionUser(existing.id, existing.email);
         return { ok: true, account: existing };
+      }
+
+      const candidateGoogleName = (gName || gEmail.split('@')[0]).slice(0, 80);
+      const duplicateGoogleName = registeredUsers.find(
+        (u) => (u.displayName || '').trim().toLowerCase() === candidateGoogleName.toLowerCase()
+      );
+      if (duplicateGoogleName) {
+        return {
+          ok: false,
+          error: `Username "${candidateGoogleName}" is already taken by another user. Please choose a unique username.`,
+        };
       }
 
       // New Google user -> set to PENDING for Super Admin Ameen's approval gate
@@ -1626,6 +1707,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const signOutUser = useCallback(async () => {
     persistSessionUser(null);
     setIsSuperAdminModalOpen(false);
+    setIsInsideHall(false);
+    setPersonalSession(null);
+    setSelectedLibraryItem(null);
+    setActiveTeamId('');
+    setActiveLibraryScope('SELF');
+    try {
+      localStorage.removeItem(STORAGE_ACTIVE_TEAM_KEY);
+    } catch {
+      // ignore
+    }
     try {
       await firebaseSignOut(auth);
     } catch {
@@ -1634,44 +1725,56 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [persistSessionUser]);
 
   const switchDemoIdentity = useCallback(
-    (memberUserId: string) => {
-      const target = allTeamMembers.find((m) => m.userId === memberUserId);
-      if (!target) return;
-      const regAccount = registeredUsers.find((u) => u.id === memberUserId);
-      if (regAccount) {
-        persistSessionUser(regAccount.id, regAccount.email);
-      }
-      setCurrentUser({
-        id: target.userId,
-        email: regAccount?.email,
-        displayName: target.displayName,
-        photoUrl: target.photoUrl,
-        status: target.presence,
-        watchingTitle: target.watchingTitle,
-        activeTeamId,
-        systemRole: regAccount?.systemRole || 'USER',
-        accountStatus: regAccount?.accountStatus || 'APPROVED',
-        authSource: regAccount?.authSource || 'EMAIL',
-        createdAt: target.joinedAt,
-        updatedAt: new Date().toISOString(),
-      });
-      // If switching to a viewer who has not yet been approved into the hall, exit hall view so they see WATCHING NOW + REQUEST TO JOIN
-      if (activeHall && activeHall.hostId !== target.userId) {
-        const isAlreadyMember = hallMembers.some(
-          (hm) => hm.hallId === activeHall.id && hm.userId === target.userId
-        );
-        if (!isAlreadyMember) {
-          setIsInsideHall(false);
-        }
-      }
+    (_memberUserId: string) => {
+      // Disabled: Every device must sign in with its own credentials and never open another user's session.
     },
-    [allTeamMembers, registeredUsers, persistSessionUser, activeTeamId, activeHall, hallMembers]
+    []
   );
 
   const updateUserProfile = useCallback(
-    async (displayName: string, photoUrl?: string) => {
+    async (
+      displayName: string,
+      photoUrl?: string
+    ): Promise<{ ok: boolean; error?: string }> => {
       const trimmed = displayName.trim().slice(0, 80);
-      if (!trimmed) return;
+      if (!trimmed) {
+        return { ok: false, error: 'Username cannot be empty.' };
+      }
+
+      const duplicateLocalUser = registeredUsers.find(
+        (u) =>
+          u.id !== currentUser.id &&
+          (u.displayName || '').trim().toLowerCase() === trimmed.toLowerCase()
+      );
+      if (duplicateLocalUser) {
+        return {
+          ok: false,
+          error: `Username "${trimmed}" is already taken. Each user must have a unique username.`,
+        };
+      }
+
+      try {
+        const res = await fetch(`/api/users/${encodeURIComponent(currentUser.id)}/profile`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: trimmed, photoUrl }),
+        });
+        const data = await res.json();
+        if (!res.ok && data?.error) {
+          return { ok: false, error: String(data.error) };
+        }
+        if (res.ok && data?.ok) {
+          if (Array.isArray(data.users)) {
+            setRegisteredUsers(data.users as RegisteredUserAccount[]);
+          }
+          if (Array.isArray(data.teamMembers)) {
+            setAllTeamMembers(data.teamMembers as TeamMember[]);
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+
       setCurrentUser((prev) => ({
         ...prev,
         displayName: trimmed,
@@ -1704,6 +1807,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           handleFirestoreError(err, OperationType.UPDATE, path);
         }
       }
+      return { ok: true };
     },
     [currentUser.id, allTeamMembers, teams, currentAccount, registeredUsers, firebaseUser, syncTeamsBroadcast, syncUsersBroadcast]
   );
@@ -1824,10 +1928,28 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const createTeam = useCallback(
-    async (name: string, pin: string, description: string): Promise<Team> => {
+    async (
+      name: string,
+      pin: string,
+      description: string
+    ): Promise<{ ok: boolean; error?: string; team?: Team }> => {
       const cleanName = name.trim().slice(0, 80);
       const cleanPin = pin.trim().slice(0, 20) || '1234';
       const cleanDesc = description.trim().slice(0, 300);
+
+      if (!cleanName) {
+        return { ok: false, error: 'Team Name is required.' };
+      }
+
+      const duplicateLocalTeam = teams.find(
+        (t) => t.name.trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      if (duplicateLocalTeam) {
+        return {
+          ok: false,
+          error: `Team name "${cleanName}" is already taken. Every team must have a unique name.`,
+        };
+      }
 
       try {
         const res = await fetch('/api/teams', {
@@ -1848,7 +1970,10 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           if (Array.isArray(data.teams)) setTeams(data.teams as Team[]);
           if (Array.isArray(data.teamMembers)) setAllTeamMembers(data.teamMembers as TeamMember[]);
           setActiveTeamId(data.team.id);
-          return data.team as Team;
+          return { ok: true, team: data.team as Team };
+        }
+        if (!res.ok && data?.error) {
+          return { ok: false, error: String(data.error) };
         }
       } catch {
         // Fallback below
@@ -1912,7 +2037,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           handleFirestoreError(err, OperationType.CREATE, `teams/${id}`);
         }
       }
-      return newTeam;
+      return { ok: true, team: newTeam };
     },
     [currentUser, teams, allTeamMembers, firebaseUser, syncTeamsBroadcast]
   );
@@ -1945,6 +2070,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return {
           ok: false,
           error: 'Both Team Name and PIN number are required.',
+        };
+      }
+
+      const duplicateLocalTeam = teams.find(
+        (t) => t.id !== teamId && t.name.trim().toLowerCase() === cleanName.toLowerCase()
+      );
+      if (duplicateLocalTeam) {
+        return {
+          ok: false,
+          error: `Team name "${cleanName}" is already in use by another team. Every team must have a unique name.`,
         };
       }
 

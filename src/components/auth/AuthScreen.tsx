@@ -412,7 +412,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           {!isAdminRoute && authTab === 'SIGN_UP' && (
             <div>
               <label className="block text-xs text-zinc-400 mb-1.5">
-                Full Name
+                Unique Username
               </label>
               <div className="relative">
                 <User className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -420,8 +420,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                   type="text"
                   required
                   value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="Enter your display name"
+                  onChange={(e) => {
+                    setError(null);
+                    setDisplayName(e.target.value);
+                  }}
+                  placeholder="Choose a unique username"
                   className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
                 />
               </div>
@@ -499,39 +502,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
-
-        {/* Quick-Fill Super Admin Credentials on /admin route */}
-        {isAdminRoute && (
-          <div className="pt-3 border-t border-zinc-800/90 space-y-2.5">
-            <div className="flex items-center justify-between text-[11px] text-amber-400/90">
-              <span className="font-semibold flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5" />
-                In-Built Super Admin Shortcut
-              </span>
-              <span className="font-mono-tabular text-zinc-400">
-                {SUPER_ADMIN_EMAIL}
-              </span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={handleQuickFillSuperAdmin}
-                className="min-h-[40px] px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-amber-500/30 text-xs font-semibold text-amber-300 flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Quick-Fill Credentials</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleInstantSuperAdminSignIn()}
-                className="min-h-[40px] px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-xs font-semibold text-zinc-950 flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Instant Admin Login</span>
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
