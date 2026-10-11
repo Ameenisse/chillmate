@@ -35,8 +35,10 @@ import {
   IntervalBreakState,
   LibraryCategory,
   LibraryDownloadTask,
+  LibraryFolder,
   LibraryItem,
   MovieHall,
+  NETFLIX_DEFAULT_CATEGORY_FOLDERS,
   ReactionEmoji,
   RegisteredUserAccount,
   ShareType,
@@ -159,6 +161,17 @@ interface ChillMateContextValue {
   selectedLibraryItem: LibraryItem | null;
   setSelectedLibraryItem: (item: LibraryItem | null) => void;
   deleteLibraryItem: (itemId: string) => Promise<{ ok: boolean; error?: string }>;
+  deleteTeamLibrary: (
+    teamId: string
+  ) => Promise<{ ok: boolean; deletedCount?: number; error?: string }>;
+  libraryFolders: LibraryFolder[];
+  getFoldersForScope: (scope?: 'SELF' | string) => string[];
+  canManageFoldersForScope: (scope?: 'SELF' | string) => boolean;
+  hasDeletedDefaultFoldersForScope: (scope?: 'SELF' | string) => boolean;
+  createLibraryFolder: (name: string, scope?: 'SELF' | string) => { ok: boolean; folderName?: string; error?: string };
+  deleteLibraryFolder: (name: string, scope?: 'SELF' | string) => Promise<{ ok: boolean; error?: string }>;
+  restoreDefaultNetflixFolders: (scope?: 'SELF' | string) => Promise<{ ok: boolean; error?: string }>;
+  moveLibraryItemToFolder: (itemId: string, folderName?: string) => Promise<void>;
   lastDeletedLibraryItem: LibraryItem | null;
   restoreDeletedLibraryItem: () => void;
   addLibraryItemFromUrl: (params: {
@@ -169,6 +182,7 @@ interface ChillMateContextValue {
     posterUrl?: string;
     sourceType?: 'DIRECT_URL' | 'WEBPAGE' | 'CLOUD_VIDEO';
     category: LibraryCategory;
+    folderName?: string;
     durationMs: number;
     year?: number;
     isDownloaded?: boolean;
@@ -184,7 +198,8 @@ interface ChillMateContextValue {
     description: string,
     category: LibraryCategory,
     onProgress: (pct: number) => void,
-    targetLibraryScope?: 'SELF' | string
+    targetLibraryScope?: 'SELF' | string,
+    folderName?: string
   ) => Promise<LibraryItem>;
 
   // VidMate-style Link Auto-Downloader into Library
@@ -197,6 +212,7 @@ interface ChillMateContextValue {
     qualityLabel?: string;
     sizeBytes?: number;
     category?: LibraryCategory;
+    folderName?: string;
     preResolved?: WebpageResolutionResult;
     targetLibraryScope?: 'SELF' | string;
   }) => Promise<LibraryItem | null>;
@@ -256,6 +272,9 @@ interface ChillMateContextValue {
   hostChangeMovie: (item: LibraryItem) => void;
   hostUpdatePositionSilent: (positionMs: number, durationMs?: number) => void;
   hostStartIntervalBreak: (durationSec: number, message?: string) => void;
+  hostAdjustIntervalBreak: (deltaSec: number) => void;
+  hostTogglePauseIntervalBreak: () => void;
+  hostResetIntervalBreak: () => void;
   hostEndIntervalBreak: (autoPlayAfterBreak?: boolean) => void;
 
   // Screen / App Share (Sections 28, 29, 30, 40)
@@ -272,10 +291,18 @@ interface ChillMateContextValue {
   sendHallReaction: (emoji: ReactionEmoji) => void;
   toggleLocalMic: () => void;
   toggleLocalCamera: () => void;
+  muteHallParticipant: (targetUserId: string) => void;
+  muteAllOtherParticipants: () => void;
   remoteMemberCamFrames: Record<string, string>;
   broadcastMemberCameraFrame: (frameDataUrl: string) => void;
-  latestVoiceChunk: { userId: string; audioDataUrl: string; ts: number } | null;
-  broadcastVoiceChunk: (audioDataUrl: string) => void;
+  latestVoiceChunk: {
+    userId: string;
+    displayName?: string;
+    audioDataUrl: string;
+    level?: number;
+    ts: number;
+  } | null;
+  broadcastVoiceChunk: (audioDataUrl: string, level?: number) => void;
   updateLocalSpeakingState: (isSpeaking: boolean) => void;
   markNotificationsRead: () => void;
 
@@ -295,7 +322,21 @@ const STORAGE_USERS_KEY = 'chillmate_users_registry_v2';
 const STORAGE_TEAMS_KEY = 'chillmate_teams_v2';
 const STORAGE_TEAM_MEMBERS_KEY = 'chillmate_team_members_v2';
 const STORAGE_LIBRARY_KEY = 'chillmate_library_v2';
+const STORAGE_FOLDERS_KEY = 'chillmate_library_folders_v2';
+const STORAGE_DELETED_FOLDERS_KEY = 'chillmate_deleted_folders_v2';
 const STORAGE_ACTIVE_TEAM_KEY = 'chillmate_active_team_v2';
+const STORAGE_ACTIVE_LIBRARY_SCOPE_KEY = 'chillmate_active_library_scope_v2';
+const STORAGE_TOMBSTONES_KEY = 'chillmate_tombstones_v2';
+
+interface ClientTombstones {
+  users: string[];
+  teams: string[];
+  teamMembers: string[];
+  libraryItems: string[];
+  libraryFolders: string[];
+}
+
+const DEFAULT_MOVIE_FOLDER_NAMES: readonly string[] = NETFLIX_DEFAULT_CATEGORY_FOLDERS;
 
 // Migrate any v1 localStorage keys into v2 keys if v2 is not yet populated (never wipe existing data)
 try {
@@ -351,6 +392,289 @@ const INITIAL_MESSAGES: HallMessage[] = [];
 
 const INITIAL_ACTIVITIES: HallActivity[] = [];
 
+function deduplicateUsersList(
+  list: RegisteredUserAccount[],
+  deletedUserIds?: Set<string>
+): RegisteredUserAccount[] {
+  const seenEmails = new Set<string>();
+  const seenNames = new Set<string>();
+  const seenIds = new Set<string>();
+  const result: RegisteredUserAccount[] = [];
+
+  for (const u of list) {
+    if (!u || !u.id || !u.email) continue;
+    const emailKey = u.email.trim().toLowerCase();
+    const isSuper = emailKey === SUPER_ADMIN_EMAIL.toLowerCase();
+    if (!isSuper && deletedUserIds?.has(u.id)) continue;
+    const nameKey = (u.displayName || u.email.split('@')[0]).trim().toLowerCase();
+    if (seenIds.has(u.id) || seenEmails.has(emailKey) || seenNames.has(nameKey)) {
+      continue;
+    }
+    seenIds.add(u.id);
+    seenEmails.add(emailKey);
+    seenNames.add(nameKey);
+    result.push({
+      ...u,
+      email: emailKey,
+      displayName: (u.displayName || u.email.split('@')[0]).trim(),
+    });
+  }
+  return result;
+}
+
+function deduplicateTeamsList(list: Team[], deletedTeamIds?: Set<string>): Team[] {
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  const result: Team[] = [];
+
+  for (const t of list) {
+    if (!t || !t.id || !t.name) continue;
+    if (deletedTeamIds?.has(t.id)) continue;
+    const nameKey = t.name.trim().toLowerCase();
+    if (seenIds.has(t.id) || seenNames.has(nameKey)) {
+      continue;
+    }
+    seenIds.add(t.id);
+    seenNames.add(nameKey);
+    result.push({
+      ...t,
+      name: t.name.trim(),
+      pin: (t.pin || '2026').trim(),
+    });
+  }
+  return result;
+}
+
+function deduplicateTeamMembersList(
+  list: TeamMember[],
+  deletedMemberIds?: Set<string>,
+  deletedTeamIds?: Set<string>,
+  deletedUserIds?: Set<string>
+): TeamMember[] {
+  const seenKeys = new Set<string>();
+  const result: TeamMember[] = [];
+  for (const m of list) {
+    if (!m || !m.teamId || !m.userId) continue;
+    const key = `${m.teamId}_${m.userId}`;
+    if (
+      deletedMemberIds?.has(key) ||
+      deletedMemberIds?.has(m.id) ||
+      deletedTeamIds?.has(m.teamId) ||
+      deletedUserIds?.has(m.userId)
+    ) {
+      continue;
+    }
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    result.push({
+      ...m,
+      id: key,
+    });
+  }
+  return result;
+}
+
+function mergeUsersAdditive(
+  prev: RegisteredUserAccount[],
+  incoming: RegisteredUserAccount[],
+  deletedUserIds?: Set<string>
+): RegisteredUserAccount[] {
+  const map = new Map<string, RegisteredUserAccount>();
+  for (const u of prev) {
+    if (!u || !u.id || !u.email) continue;
+    const isSuper = u.email.trim().toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+    if (!isSuper && deletedUserIds?.has(u.id)) continue;
+    map.set(u.id, u);
+  }
+  for (const inc of incoming) {
+    if (!inc || !inc.id || !inc.email) continue;
+    const isSuper = inc.email.trim().toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+    if (!isSuper && deletedUserIds?.has(inc.id)) continue;
+    // Match by id or email
+    let existingKey = inc.id;
+    for (const [k, v] of map.entries()) {
+      if (v.email.trim().toLowerCase() === inc.email.trim().toLowerCase()) {
+        existingKey = k;
+        break;
+      }
+    }
+    const existing = map.get(existingKey);
+    if (!existing) {
+      map.set(inc.id, inc);
+    } else {
+      const incNewer =
+        !existing.updatedAt || (inc.updatedAt && inc.updatedAt >= existing.updatedAt);
+      const mergedStatus =
+        existing.accountStatus === 'APPROVED' || inc.accountStatus === 'APPROVED'
+          ? incNewer && (inc.accountStatus === 'SUSPENDED' || inc.accountStatus === 'DECLINED')
+            ? inc.accountStatus
+            : 'APPROVED'
+          : inc.accountStatus || existing.accountStatus;
+      map.delete(existingKey);
+      map.set(inc.id, {
+        ...existing,
+        ...inc,
+        id: inc.id || existing.id,
+        accountStatus: mergedStatus,
+        password: inc.password || existing.password,
+        appLockPin:
+          incNewer && inc.appLockPin !== undefined ? inc.appLockPin : existing.appLockPin,
+        appLockEnabled:
+          incNewer && inc.appLockEnabled !== undefined
+            ? inc.appLockEnabled
+            : existing.appLockEnabled,
+      });
+    }
+  }
+  return deduplicateUsersList(Array.from(map.values()), deletedUserIds);
+}
+
+function mergeTeamsAdditive(
+  prev: Team[],
+  incoming: Team[],
+  deletedTeamIds?: Set<string>
+): Team[] {
+  const map = new Map<string, Team>();
+  for (const t of prev) {
+    if (!t || !t.id || !t.name) continue;
+    if (deletedTeamIds?.has(t.id)) continue;
+    map.set(t.id, t);
+  }
+  for (const inc of incoming) {
+    if (!inc || !inc.id || !inc.name) continue;
+    if (deletedTeamIds?.has(inc.id)) continue;
+    const existing = map.get(inc.id);
+    if (!existing) {
+      map.set(inc.id, {
+        ...inc,
+        imageUrl: inc.imageUrl || ASSETS.posterInterstellar,
+      });
+    } else {
+      const incNewer =
+        !existing.updatedAt || (inc.updatedAt && inc.updatedAt >= existing.updatedAt);
+      map.set(
+        inc.id,
+        incNewer
+          ? {
+              ...existing,
+              ...inc,
+              imageUrl: inc.imageUrl || existing.imageUrl || ASSETS.posterInterstellar,
+            }
+          : {
+              ...inc,
+              ...existing,
+              imageUrl: existing.imageUrl || inc.imageUrl || ASSETS.posterInterstellar,
+            }
+      );
+    }
+  }
+  return deduplicateTeamsList(Array.from(map.values()), deletedTeamIds);
+}
+
+function mergeTeamMembersAdditive(
+  prev: TeamMember[],
+  incoming: TeamMember[],
+  deletedMemberIds?: Set<string>,
+  deletedTeamIds?: Set<string>,
+  deletedUserIds?: Set<string>
+): TeamMember[] {
+  const map = new Map<string, TeamMember>();
+  for (const m of prev) {
+    if (!m || !m.teamId || !m.userId) continue;
+    const key = `${m.teamId}_${m.userId}`;
+    if (
+      deletedMemberIds?.has(key) ||
+      deletedMemberIds?.has(m.id) ||
+      deletedTeamIds?.has(m.teamId) ||
+      deletedUserIds?.has(m.userId)
+    ) {
+      continue;
+    }
+    map.set(key, { ...m, id: key });
+  }
+  for (const inc of incoming) {
+    if (!inc || !inc.teamId || !inc.userId) continue;
+    const key = `${inc.teamId}_${inc.userId}`;
+    if (
+      deletedMemberIds?.has(key) ||
+      deletedMemberIds?.has(inc.id) ||
+      deletedTeamIds?.has(inc.teamId) ||
+      deletedUserIds?.has(inc.userId)
+    ) {
+      continue;
+    }
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { ...inc, id: key });
+    } else {
+      const incNewer =
+        !existing.updatedAt || (inc.updatedAt && inc.updatedAt >= existing.updatedAt);
+      map.set(key, incNewer ? { ...existing, ...inc, id: key } : { ...inc, ...existing, id: key });
+    }
+  }
+  return deduplicateTeamMembersList(
+    Array.from(map.values()),
+    deletedMemberIds,
+    deletedTeamIds,
+    deletedUserIds
+  );
+}
+
+function mergeLibraryItemsAdditive(
+  prev: LibraryItem[],
+  incoming: LibraryItem[],
+  deletedItemIds?: Set<string>,
+  deletedTeamIds?: Set<string>
+): LibraryItem[] {
+  const map = new Map<string, LibraryItem>();
+  for (const item of prev) {
+    if (!item || !item.id || !item.title || !item.videoUrl) continue;
+    if (deletedItemIds?.has(item.id)) continue;
+    if (item.teamId && deletedTeamIds?.has(item.teamId)) continue;
+    map.set(item.id, item);
+  }
+  for (const inc of incoming) {
+    if (!inc || !inc.id || !inc.title || !inc.videoUrl) continue;
+    if (deletedItemIds?.has(inc.id)) continue;
+    if (inc.teamId && deletedTeamIds?.has(inc.teamId)) continue;
+    const existing = map.get(inc.id);
+    if (!existing) {
+      map.set(inc.id, inc);
+    } else {
+      const incNewer =
+        !existing.updatedAt || (inc.updatedAt && inc.updatedAt >= existing.updatedAt);
+      map.set(inc.id, incNewer ? { ...existing, ...inc } : { ...inc, ...existing });
+    }
+  }
+  return Array.from(map.values());
+}
+
+function mergeLibraryFoldersAdditive(
+  prev: LibraryFolder[],
+  incoming: LibraryFolder[],
+  deletedFolderKeysSet?: Set<string>,
+  deletedTeamIds?: Set<string>
+): LibraryFolder[] {
+  const map = new Map<string, LibraryFolder>();
+  for (const f of prev) {
+    if (!f || !f.name || !f.scope) continue;
+    if (deletedTeamIds?.has(f.scope)) continue;
+    const key = `${f.scope.trim().toLowerCase()}::${f.name.trim().toLowerCase()}`;
+    if (deletedFolderKeysSet?.has(key)) continue;
+    map.set(key, f);
+  }
+  for (const inc of incoming) {
+    if (!inc || !inc.name || !inc.scope) continue;
+    if (deletedTeamIds?.has(inc.scope)) continue;
+    const key = `${inc.scope.trim().toLowerCase()}::${inc.name.trim().toLowerCase()}`;
+    if (deletedFolderKeysSet?.has(key)) continue;
+    if (!map.has(key)) {
+      map.set(key, inc);
+    }
+  }
+  return Array.from(map.values());
+}
+
 export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
@@ -366,19 +690,19 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const hasSuper = parsed.some(
             (u) => u.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()
           );
-          if (!hasSuper) {
-            return [INITIAL_REGISTERED_USERS[0], ...parsed];
-          }
-          return parsed.map((u) =>
-            u.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()
-              ? {
-                  ...u,
-                  systemRole: 'SUPER_ADMIN',
-                  accountStatus: 'APPROVED',
-                  password: SUPER_ADMIN_PASSWORD,
-                }
-              : u
-          );
+          const withSuper = hasSuper
+            ? parsed.map((u) =>
+                u.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()
+                  ? {
+                      ...u,
+                      systemRole: 'SUPER_ADMIN' as const,
+                      accountStatus: 'APPROVED' as const,
+                      password: SUPER_ADMIN_PASSWORD,
+                    }
+                  : u
+              )
+            : [INITIAL_REGISTERED_USERS[0], ...parsed];
+          return deduplicateUsersList(withSuper);
         }
       }
     } catch {
@@ -424,16 +748,35 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return '';
   });
 
+  const [sessionUsername, setSessionUsername] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as {
+          username?: string;
+          explicitlyAuthenticatedOnDevice?: boolean;
+        };
+        if (parsed?.explicitlyAuthenticatedOnDevice && parsed?.username) {
+          return parsed.username.trim().toLowerCase();
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return '';
+  });
+
   const currentAccount = useMemo(() => {
-    if (!sessionUserId && !sessionEmail) return null;
+    if (!sessionUserId && !sessionEmail && !sessionUsername) return null;
     return (
       registeredUsers.find(
         (u) =>
           (sessionUserId && u.id === sessionUserId) ||
-          (sessionEmail && u.email.toLowerCase() === sessionEmail)
+          (sessionEmail && u.email.toLowerCase() === sessionEmail) ||
+          (sessionUsername && (u.displayName || '').trim().toLowerCase() === sessionUsername)
       ) || null
     );
-  }, [registeredUsers, sessionUserId, sessionEmail]);
+  }, [registeredUsers, sessionUserId, sessionEmail, sessionUsername]);
 
   const isAuthenticated = useMemo(
     () => Boolean(currentAccount && currentAccount.accountStatus === 'APPROVED'),
@@ -450,17 +793,39 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [currentAccount]
   );
 
-  const [currentUser, setCurrentUser] = useState<UserProfile>({
-    id: '',
-    email: '',
-    displayName: 'Guest',
-    status: 'OFFLINE',
-    activeTeamId: '',
-    systemRole: 'USER',
-    accountStatus: 'PENDING',
-    authSource: 'EMAIL',
-    createdAt: '',
-    updatedAt: '',
+  const [currentUser, setCurrentUser] = useState<UserProfile>(() => {
+    if (currentAccount) {
+      const isEnabled =
+        currentAccount.appLockEnabled === true &&
+        Boolean((currentAccount.appLockPin || '').trim());
+      return {
+        id: currentAccount.id,
+        email: currentAccount.email,
+        displayName: currentAccount.displayName,
+        photoUrl: currentAccount.photoUrl,
+        status: 'ONLINE',
+        activeTeamId: '',
+        systemRole: currentAccount.systemRole,
+        accountStatus: currentAccount.accountStatus,
+        authSource: currentAccount.authSource,
+        appLockPin: isEnabled ? (currentAccount.appLockPin || '').trim() : '',
+        appLockEnabled: isEnabled,
+        createdAt: currentAccount.createdAt || '',
+        updatedAt: currentAccount.updatedAt || '',
+      };
+    }
+    return {
+      id: '',
+      email: '',
+      displayName: 'Guest',
+      status: 'OFFLINE',
+      activeTeamId: '',
+      systemRole: 'USER',
+      accountStatus: 'PENDING',
+      authSource: 'EMAIL',
+      createdAt: '',
+      updatedAt: '',
+    };
   });
 
   const [teams, setTeams] = useState<Team[]>(() => {
@@ -469,10 +834,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (saved) {
         const parsed = JSON.parse(saved) as Team[];
         if (Array.isArray(parsed)) {
-          return parsed.map((t) => ({
-            ...t,
-            pin: t.pin || '2026',
-          }));
+          return deduplicateTeamsList(parsed);
         }
       }
     } catch {
@@ -487,7 +849,66 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return '';
     }
   });
-  const [activeLibraryScope, setActiveLibraryScope] = useState<'SELF' | string>('SELF');
+  const [activeLibraryScope, setActiveLibraryScope] = useState<'SELF' | string>(() => {
+    try {
+      return localStorage.getItem(STORAGE_ACTIVE_LIBRARY_SCOPE_KEY) || 'SELF';
+    } catch {
+      return 'SELF';
+    }
+  });
+  const [tombstones, setTombstones] = useState<ClientTombstones>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_TOMBSTONES_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<ClientTombstones>;
+        return {
+          users: Array.isArray(parsed?.users) ? parsed.users : [],
+          teams: Array.isArray(parsed?.teams) ? parsed.teams : [],
+          teamMembers: Array.isArray(parsed?.teamMembers) ? parsed.teamMembers : [],
+          libraryItems: Array.isArray(parsed?.libraryItems) ? parsed.libraryItems : [],
+          libraryFolders: Array.isArray(parsed?.libraryFolders) ? parsed.libraryFolders : [],
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return { users: [], teams: [], teamMembers: [], libraryItems: [], libraryFolders: [] };
+  });
+  const tombstonesRef = useRef<ClientTombstones>(tombstones);
+  useEffect(() => {
+    tombstonesRef.current = tombstones;
+    try {
+      localStorage.setItem(STORAGE_TOMBSTONES_KEY, JSON.stringify(tombstones));
+    } catch {
+      // ignore
+    }
+  }, [tombstones]);
+
+  const mergeIncomingTombstones = useCallback(
+    (incoming?: Partial<ClientTombstones>, extraDeletedFolders?: string[]): ClientTombstones => {
+      const cur = tombstonesRef.current;
+      const next: ClientTombstones = {
+        users: Array.from(new Set([...cur.users, ...(incoming?.users || [])])),
+        teams: Array.from(new Set([...cur.teams, ...(incoming?.teams || [])])),
+        teamMembers: Array.from(new Set([...cur.teamMembers, ...(incoming?.teamMembers || [])])),
+        libraryItems: Array.from(
+          new Set([...cur.libraryItems, ...(incoming?.libraryItems || [])])
+        ),
+        libraryFolders: Array.from(
+          new Set([
+            ...cur.libraryFolders,
+            ...(incoming?.libraryFolders || []),
+            ...(extraDeletedFolders || []),
+          ])
+        ),
+      };
+      tombstonesRef.current = next;
+      setTombstones(next);
+      return next;
+    },
+    []
+  );
+
   const [unlockedUsersInSession, setUnlockedUsersInSession] = useState<Record<string, boolean>>({});
   const [allTeamMembers, setAllTeamMembers] = useState<TeamMember[]>(() => {
     try {
@@ -495,7 +916,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (saved) {
         const parsed = JSON.parse(saved) as TeamMember[];
         if (Array.isArray(parsed)) {
-          return parsed;
+          return deduplicateTeamMembersList(parsed);
         }
       }
     } catch {
@@ -517,6 +938,102 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
     return DEFAULT_LIBRARY_ITEMS;
   });
+  const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_FOLDERS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as LibraryFolder[];
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+  const [deletedFolderKeys, setDeletedFolderKeys] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_DELETED_FOLDERS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[];
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+
+  // Apply server state additively so local data is NEVER wiped or auto-reset unless explicitly tombstoned
+  const applyIncomingServerState = useCallback(
+    (data: {
+      users?: RegisteredUserAccount[];
+      teams?: Team[];
+      teamMembers?: TeamMember[];
+      libraryItems?: LibraryItem[];
+      libraryFolders?: LibraryFolder[];
+      deletedFolderKeys?: string[];
+      tombstones?: Partial<ClientTombstones>;
+    }) => {
+      if (!data) return;
+      const mergedTombs = mergeIncomingTombstones(data.tombstones, data.deletedFolderKeys);
+      const delUsers = new Set(mergedTombs.users);
+      const delTeams = new Set(mergedTombs.teams);
+      const delMembers = new Set(mergedTombs.teamMembers);
+      const delItems = new Set(mergedTombs.libraryItems);
+      const delFolders = new Set(mergedTombs.libraryFolders.map((k) => k.toLowerCase()));
+
+      if (Array.isArray(data.users) && data.users.length > 0) {
+        setRegisteredUsers((prev) =>
+          mergeUsersAdditive(prev, data.users as RegisteredUserAccount[], delUsers)
+        );
+      }
+      if (Array.isArray(data.teams)) {
+        setTeams((prev) => mergeTeamsAdditive(prev, data.teams as Team[], delTeams));
+      }
+      if (Array.isArray(data.teamMembers)) {
+        setAllTeamMembers((prev) =>
+          mergeTeamMembersAdditive(
+            prev,
+            data.teamMembers as TeamMember[],
+            delMembers,
+            delTeams,
+            delUsers
+          )
+        );
+      }
+      if (Array.isArray(data.libraryItems)) {
+        setLibraryItems((prev) =>
+          mergeLibraryItemsAdditive(prev, data.libraryItems as LibraryItem[], delItems, delTeams)
+        );
+      }
+      if (Array.isArray(data.libraryFolders)) {
+        setLibraryFolders((prev) =>
+          mergeLibraryFoldersAdditive(
+            prev,
+            data.libraryFolders as LibraryFolder[],
+            delFolders,
+            delTeams
+          )
+        );
+      }
+      if (Array.isArray(data.deletedFolderKeys) || mergedTombs.libraryFolders.length > 0) {
+        setDeletedFolderKeys((prev) =>
+          Array.from(
+            new Set([
+              ...prev.map((k) => k.toLowerCase()),
+              ...(data.deletedFolderKeys || []).map((k) => k.toLowerCase()),
+              ...mergedTombs.libraryFolders.map((k) => k.toLowerCase()),
+            ])
+          )
+        );
+      }
+    },
+    [mergeIncomingTombstones]
+  );
   const [selectedLibraryItem, setSelectedLibraryItem] = useState<LibraryItem | null>(null);
   const [lastDeletedLibraryItem, setLastDeletedLibraryItem] = useState<LibraryItem | null>(null);
   const [downloadTasks, setDownloadTasks] = useState<LibraryDownloadTask[]>([]);
@@ -542,7 +1059,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [remoteMemberCamFrames, setRemoteMemberCamFrames] = useState<Record<string, string>>({});
   const [latestVoiceChunk, setLatestVoiceChunk] = useState<{
     userId: string;
+    displayName?: string;
     audioDataUrl: string;
+    level?: number;
     ts: number;
   } | null>(null);
   const [viewportPreset, setViewportPreset] = useState<ViewportPreset>('AUTO');
@@ -550,25 +1069,29 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const wsRef = useRef<WebSocket | null>(null);
   const lastHostHeartbeatRef = useRef<number>(0);
 
+  const effectiveUserId = currentAccount?.id || currentUser.id;
+
   // Teams visible to the current user: ONLY teams created by this user OR joined by this user via Name & PIN
   const userTeams = useMemo(() => {
-    const uid = currentUser.id;
+    const uid = effectiveUserId;
     if (!uid) return [];
     return teams.filter(
       (t) =>
         t.ownerId === uid ||
         allTeamMembers.some((m) => m.teamId === t.id && m.userId === uid)
     );
-  }, [teams, allTeamMembers, currentUser.id]);
+  }, [teams, allTeamMembers, effectiveUserId]);
 
   // Auto-select first available userTeam if activeTeamId is empty or no longer in user's teams
   useEffect(() => {
+    if (!effectiveUserId) return;
     if (userTeams.length > 0 && !userTeams.some((t) => t.id === activeTeamId)) {
       setActiveTeamId(userTeams[0].id);
-    } else if (userTeams.length === 0 && activeTeamId !== '') {
+    } else if (userTeams.length === 0 && activeTeamId !== '' && teams.length > 0) {
+      // Only clear if teams have loaded and user truly has no teams
       setActiveTeamId('');
     }
-  }, [userTeams, activeTeamId]);
+  }, [userTeams, activeTeamId, effectiveUserId, teams.length]);
 
   const activeTeam = useMemo(
     () => userTeams.find((t) => t.id === activeTeamId) || userTeams[0] || EMPTY_TEAM_PLACEHOLDER,
@@ -580,26 +1103,33 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [allTeamMembers, activeTeam.id]
   );
 
-  // Keep activeLibraryScope valid if a selected team was deleted or left
+  // Keep activeLibraryScope valid only if the selected team was explicitly deleted via tombstone
   useEffect(() => {
+    try {
+      if (activeLibraryScope) {
+        localStorage.setItem(STORAGE_ACTIVE_LIBRARY_SCOPE_KEY, activeLibraryScope);
+      }
+    } catch {
+      // ignore
+    }
     if (
       activeLibraryScope !== 'SELF' &&
-      !userTeams.some((t) => t.id === activeLibraryScope)
+      tombstones.teams.includes(activeLibraryScope)
     ) {
       setActiveLibraryScope('SELF');
     }
-  }, [activeLibraryScope, userTeams]);
+  }, [activeLibraryScope, tombstones.teams]);
 
   const isOwnerOfTeam = useCallback(
     (teamId: string): boolean => {
-      if (!teamId || !currentUser.id) return false;
+      if (!teamId || !effectiveUserId) return false;
       const t = teams.find((team) => team.id === teamId);
-      if (t && t.ownerId === currentUser.id) return true;
+      if (t && t.ownerId === effectiveUserId) return true;
       return allTeamMembers.some(
-        (m) => m.teamId === teamId && m.userId === currentUser.id && m.role === 'OWNER'
+        (m) => m.teamId === teamId && m.userId === effectiveUserId && m.role === 'OWNER'
       );
     },
-    [teams, allTeamMembers, currentUser.id]
+    [teams, allTeamMembers, effectiveUserId]
   );
 
   // 1. Self Library: ONLY visible to the user who added it
@@ -607,9 +1137,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return libraryItems.filter((item) => {
       const isSelf =
         !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
-      return isSelf && item.addedById === currentUser.id;
+      return isSelf && item.addedById === effectiveUserId;
     });
-  }, [libraryItems, currentUser.id]);
+  }, [libraryItems, effectiveUserId]);
 
   // 2. Team Libraries: Separate library for each team; ONLY visible to members of that team
   const teamLibraryItemsByTeam = useMemo(() => {
@@ -655,19 +1185,22 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
   }, [libraryItems, currentUser.id, userTeams]);
 
-  // Strict RBAC for deleting library videos:
-  // - Self Library: only the owner user (addedById === currentUser.id) can delete.
-  // - Team Library: ONLY the Team Owner can manage (delete) Team Library videos!
+  // RBAC for deleting library videos:
+  // - Self Library: only the owner user (addedById === currentUser.id) or Super Admin can delete.
+  // - Team Library: Team Owner, Team Admin, Team Member, uploader, or Super Admin can delete.
   const canDeleteLibraryItem = useCallback(
     (item: LibraryItem): boolean => {
+      if (isSuperAdmin) return true;
       const isSelf =
         !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
       if (isSelf) {
         return item.addedById === currentUser.id;
       }
-      return isOwnerOfTeam(item.teamId);
+      if (item.addedById === currentUser.id) return true;
+      if (isOwnerOfTeam(item.teamId)) return true;
+      return userTeams.some((t) => t.id === item.teamId);
     },
-    [currentUser.id, isOwnerOfTeam]
+    [currentUser.id, isOwnerOfTeam, isSuperAdmin, userTeams]
   );
 
   // Sync currentAccount -> currentUser whenever currentAccount changes
@@ -733,6 +1266,453 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ignore
     }
   }, [teams]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_FOLDERS_KEY, JSON.stringify(libraryFolders));
+    } catch {
+      // ignore
+    }
+  }, [libraryFolders]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_DELETED_FOLDERS_KEY, JSON.stringify(deletedFolderKeys));
+    } catch {
+      // ignore
+    }
+  }, [deletedFolderKeys]);
+
+  // Owner check for managing/deleting folders in a Library:
+  // - For Self Library ('SELF'): the logged-in user owns their Self Library.
+  // - For a Team Library (teamId): strictly the Team Owner (who created the team) or Super Admin can delete folders.
+  const canManageFoldersForScope = useCallback(
+    (scope?: 'SELF' | string): boolean => {
+      const targetScope = scope ?? activeLibraryScope;
+      const isSelf =
+        targetScope === 'SELF' ||
+        !targetScope ||
+        targetScope.toLowerCase().startsWith('self_') ||
+        !userTeams.some((t) => t.id === targetScope);
+      if (isSelf) return true;
+      if (isSuperAdmin) return true;
+      return isOwnerOfTeam(targetScope);
+    },
+    [activeLibraryScope, userTeams, isSuperAdmin, isOwnerOfTeam]
+  );
+
+  // Auto-populate libraryFolders state with all Netflix category folders for Self Library and each created Team Library
+  useEffect(() => {
+    const uid = currentUser.id || 'system';
+    const scopesToEnsure: string[] = ['SELF'];
+    if (currentUser.id) {
+      scopesToEnsure.push(`self_${currentUser.id}`);
+    }
+    for (const t of userTeams) {
+      if (t.id) scopesToEnsure.push(t.id);
+    }
+
+    setLibraryFolders((prev) => {
+      let changed = false;
+      const next = [...prev];
+      const deletedSet = new Set(deletedFolderKeys.map((k) => k.toLowerCase()));
+
+      for (const sc of scopesToEnsure) {
+        const isSelfSc = sc === 'SELF' || sc.toLowerCase().startsWith('self_');
+        for (const catName of DEFAULT_MOVIE_FOLDER_NAMES) {
+          const tombKey = `${sc.toLowerCase()}::${catName.toLowerCase()}`;
+          const genericSelfTombKey = isSelfSc ? `self::${catName.toLowerCase()}` : '';
+          const userSelfTombKey =
+            isSelfSc && currentUser.id
+              ? `self_${currentUser.id.toLowerCase()}::${catName.toLowerCase()}`
+              : '';
+          if (
+            deletedSet.has(tombKey) ||
+            (genericSelfTombKey && deletedSet.has(genericSelfTombKey)) ||
+            (userSelfTombKey && deletedSet.has(userSelfTombKey))
+          ) {
+            continue;
+          }
+
+          const exists = next.some(
+            (f) =>
+              f.scope.toLowerCase() === sc.toLowerCase() &&
+              f.name.trim().toLowerCase() === catName.toLowerCase()
+          );
+          if (!exists) {
+            const slug = catName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+            next.push({
+              id: `folder_${sc}_${slug}`,
+              name: catName,
+              scope: sc,
+              createdById: uid,
+              isNetflixDefault: true,
+              createdAt: new Date().toISOString(),
+            });
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [currentUser.id, userTeams, deletedFolderKeys]);
+
+  const getFoldersForScope = useCallback(
+    (scope?: 'SELF' | string): string[] => {
+      const targetScope = scope ?? activeLibraryScope;
+      const isSelf =
+        targetScope === 'SELF' ||
+        !targetScope ||
+        targetScope.toLowerCase().startsWith('self_') ||
+        !userTeams.some((t) => t.id === targetScope);
+      const normalizedScope = isSelf ? 'SELF' : targetScope;
+      const userSelfScope = currentUser.id ? `self_${currentUser.id}` : 'SELF';
+      const scopedItems = isSelf
+        ? selfLibraryItems
+        : teamLibraryItemsByTeam[normalizedScope] || [];
+
+      const deletedSet = new Set(deletedFolderKeys.map((k) => k.toLowerCase()));
+      const isFolderDeletedInScope = (folderName: string): boolean => {
+        const lowerName = folderName.trim().toLowerCase();
+        if (!lowerName) return true;
+        if (isSelf) {
+          return (
+            deletedSet.has(`self::${lowerName}`) ||
+            deletedSet.has(`${userSelfScope.toLowerCase()}::${lowerName}`)
+          );
+        }
+        return deletedSet.has(`${normalizedScope.toLowerCase()}::${lowerName}`);
+      };
+
+      const names = new Set<string>();
+      // 1. Auto-created Netflix default categories (unless deleted by Owner)
+      for (const catName of DEFAULT_MOVIE_FOLDER_NAMES) {
+        if (!isFolderDeletedInScope(catName)) {
+          names.add(catName);
+        }
+      }
+      // 2. Stored folders for this library scope (unless deleted by Owner)
+      for (const f of libraryFolders) {
+        const fScope = f.scope.trim();
+        const matchesScope = isSelf
+          ? fScope === 'SELF' || fScope.toLowerCase() === userSelfScope.toLowerCase()
+          : fScope === normalizedScope;
+        if (matchesScope && f.name.trim() && !isFolderDeletedInScope(f.name)) {
+          names.add(f.name.trim());
+        }
+      }
+      // 3. Any folder names currently assigned to movies in this scope (unless deleted by Owner)
+      for (const item of scopedItems) {
+        if (item.folderName && item.folderName.trim() && !isFolderDeletedInScope(item.folderName)) {
+          names.add(item.folderName.trim());
+        }
+      }
+      return Array.from(names);
+    },
+    [
+      activeLibraryScope,
+      userTeams,
+      currentUser.id,
+      selfLibraryItems,
+      teamLibraryItemsByTeam,
+      libraryFolders,
+      deletedFolderKeys,
+    ]
+  );
+
+  const hasDeletedDefaultFoldersForScope = useCallback(
+    (scope?: 'SELF' | string): boolean => {
+      const currentFolders = getFoldersForScope(scope).map((f) => f.toLowerCase());
+      return DEFAULT_MOVIE_FOLDER_NAMES.some(
+        (cat) => !currentFolders.includes(cat.toLowerCase())
+      );
+    },
+    [getFoldersForScope]
+  );
+
+  const createLibraryFolder = useCallback(
+    (
+      name: string,
+      scope?: 'SELF' | string
+    ): { ok: boolean; folderName?: string; error?: string } => {
+      const cleanName = name.trim().slice(0, 60);
+      if (!cleanName) {
+        return { ok: false, error: 'Please enter a folder name.' };
+      }
+      const targetScope = scope ?? activeLibraryScope;
+      const isSelf =
+        targetScope === 'SELF' ||
+        !targetScope ||
+        targetScope.toLowerCase().startsWith('self_') ||
+        !userTeams.some((t) => t.id === targetScope);
+      const normalizedScope = isSelf ? 'SELF' : targetScope;
+      const userSelfScope = currentUser.id ? `self_${currentUser.id}` : 'SELF';
+
+      // Clear any deleted tombstone for this folder name in this scope
+      const filterRemovedKey = (k: string) => {
+        const lowerK = k.toLowerCase();
+        const lowerTarget = cleanName.toLowerCase();
+        if (isSelf) {
+          return (
+            lowerK !== `self::${lowerTarget}` &&
+            lowerK !== `${userSelfScope.toLowerCase()}::${lowerTarget}`
+          );
+        }
+        return lowerK !== `${normalizedScope.toLowerCase()}::${lowerTarget}`;
+      };
+      setDeletedFolderKeys((prev) => prev.filter(filterRemovedKey));
+      setTombstones((prev) => ({
+        ...prev,
+        libraryFolders: prev.libraryFolders.filter(filterRemovedKey),
+      }));
+
+      const existingFolders = getFoldersForScope(normalizedScope);
+      const match = existingFolders.find(
+        (fn) => fn.toLowerCase() === cleanName.toLowerCase()
+      );
+      if (match) {
+        fetch('/api/library/folders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: match,
+            scope: isSelf ? userSelfScope : normalizedScope,
+            callerUserId: currentUser.id,
+          }),
+        }).catch(() => {});
+        return { ok: true, folderName: match };
+      }
+
+      const newFolder: LibraryFolder = {
+        id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: cleanName,
+        scope: isSelf ? userSelfScope : normalizedScope,
+        createdById: currentUser.id,
+        isNetflixDefault: DEFAULT_MOVIE_FOLDER_NAMES.some(
+          (c) => c.toLowerCase() === cleanName.toLowerCase()
+        ),
+        createdAt: new Date().toISOString(),
+      };
+      setLibraryFolders((prev) => [...prev, newFolder]);
+
+      fetch('/api/library/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: cleanName,
+          scope: isSelf ? userSelfScope : normalizedScope,
+          callerUserId: currentUser.id,
+        }),
+      }).catch(() => {});
+
+      return { ok: true, folderName: cleanName };
+    },
+    [activeLibraryScope, userTeams, getFoldersForScope, currentUser.id]
+  );
+
+  const deleteLibraryFolder = useCallback(
+    async (
+      name: string,
+      scope?: 'SELF' | string
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const cleanName = name.trim();
+      if (!cleanName) {
+        return { ok: false, error: 'Folder name is required.' };
+      }
+      const targetScope = scope ?? activeLibraryScope;
+      const isSelf =
+        targetScope === 'SELF' ||
+        !targetScope ||
+        targetScope.toLowerCase().startsWith('self_') ||
+        !userTeams.some((t) => t.id === targetScope);
+      const normalizedScope = isSelf ? 'SELF' : targetScope;
+      const userSelfScope = currentUser.id ? `self_${currentUser.id}` : 'SELF';
+
+      if (!canManageFoldersForScope(normalizedScope)) {
+        return {
+          ok: false,
+          error: 'Only the Team Owner can delete folders in this Team Library.',
+        };
+      }
+
+      const lowerFolder = cleanName.toLowerCase();
+      const keysToAdd = isSelf
+        ? [`self::${lowerFolder}`, `${userSelfScope.toLowerCase()}::${lowerFolder}`]
+        : [`${normalizedScope.toLowerCase()}::${lowerFolder}`];
+
+      mergeIncomingTombstones({ libraryFolders: keysToAdd });
+
+      setDeletedFolderKeys((prev) => {
+        const next = new Set(prev.map((k) => k.toLowerCase()));
+        for (const k of keysToAdd) next.add(k);
+        return Array.from(next);
+      });
+
+      setLibraryFolders((prev) =>
+        prev.filter((f) => {
+          const sameName = f.name.trim().toLowerCase() === lowerFolder;
+          if (!sameName) return true;
+          if (isSelf) {
+            return (
+              f.scope !== 'SELF' &&
+              f.scope.toLowerCase() !== userSelfScope.toLowerCase()
+            );
+          }
+          return f.scope !== normalizedScope;
+        })
+      );
+
+      // Unassign items in that scope from this folder (moves them to Uncategorized / General)
+      setLibraryItems((prev) =>
+        prev.map((item) => {
+          const itemIsSelf =
+            !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
+          const itemScope = itemIsSelf ? 'SELF' : item.teamId;
+          if (
+            itemScope === normalizedScope &&
+            (item.folderName || '').trim().toLowerCase() === lowerFolder
+          ) {
+            const updated = { ...item, folderName: undefined, updatedAt: new Date().toISOString() };
+            fetch(`/api/library/${encodeURIComponent(item.id)}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ folderName: '' }),
+            }).catch(() => {});
+            return updated;
+          }
+          return item;
+        })
+      );
+
+      try {
+        const apiScope = isSelf ? userSelfScope : normalizedScope;
+        const res = await fetch(
+          `/api/library/folders?name=${encodeURIComponent(cleanName)}&scope=${encodeURIComponent(apiScope)}&callerUserId=${encodeURIComponent(currentUser.id)}`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.deletedFolderKeys)) {
+            mergeIncomingTombstones({ libraryFolders: data.deletedFolderKeys });
+          }
+        }
+      } catch {
+        // Local update already applied
+      }
+
+      return { ok: true };
+    },
+    [
+      activeLibraryScope,
+      userTeams,
+      currentUser.id,
+      canManageFoldersForScope,
+      mergeIncomingTombstones,
+    ]
+  );
+
+  const restoreDefaultNetflixFolders = useCallback(
+    async (scope?: 'SELF' | string): Promise<{ ok: boolean; error?: string }> => {
+      const targetScope = scope ?? activeLibraryScope;
+      const isSelf =
+        targetScope === 'SELF' ||
+        !targetScope ||
+        targetScope.toLowerCase().startsWith('self_') ||
+        !userTeams.some((t) => t.id === targetScope);
+      const normalizedScope = isSelf ? 'SELF' : targetScope;
+      const userSelfScope = currentUser.id ? `self_${currentUser.id}` : 'SELF';
+
+      if (!canManageFoldersForScope(normalizedScope)) {
+        return {
+          ok: false,
+          error: 'Only the Team Owner can restore folders in this Team Library.',
+        };
+      }
+
+      const filterScopeKeys = (k: string) => {
+        const lowerK = k.toLowerCase();
+        if (isSelf) {
+          return (
+            !lowerK.startsWith('self::') &&
+            !lowerK.startsWith(`${userSelfScope.toLowerCase()}::`)
+          );
+        }
+        return !lowerK.startsWith(`${normalizedScope.toLowerCase()}::`);
+      };
+
+      setDeletedFolderKeys((prev) => prev.filter(filterScopeKeys));
+      setTombstones((prev) => ({
+        ...prev,
+        libraryFolders: prev.libraryFolders.filter(filterScopeKeys),
+      }));
+
+      try {
+        const apiScope = isSelf ? userSelfScope : normalizedScope;
+        const res = await fetch('/api/library/folders/restore-defaults', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scope: apiScope,
+            callerUserId: currentUser.id,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.libraryFolders)) {
+            applyIncomingServerState({
+              libraryFolders: data.libraryFolders as LibraryFolder[],
+            });
+          }
+        }
+      } catch {
+        // Local state already restored
+      }
+
+      return { ok: true };
+    },
+    [
+      activeLibraryScope,
+      userTeams,
+      currentUser.id,
+      canManageFoldersForScope,
+      applyIncomingServerState,
+    ]
+  );
+
+  const moveLibraryItemToFolder = useCallback(
+    async (itemId: string, folderName?: string): Promise<void> => {
+      const cleanFolder = (folderName || '').trim() || undefined;
+      if (cleanFolder) {
+        const target = libraryItems.find((i) => i.id === itemId);
+        if (target) {
+          const isSelf =
+            !target.teamId || target.teamId.startsWith('self_') || target.libraryScope === 'SELF';
+          createLibraryFolder(cleanFolder, isSelf ? 'SELF' : target.teamId);
+        }
+      }
+      const nowIso = new Date().toISOString();
+      setLibraryItems((prev) =>
+        prev.map((i) =>
+          i.id === itemId ? { ...i, folderName: cleanFolder, updatedAt: nowIso } : i
+        )
+      );
+      setSelectedLibraryItem((prev) =>
+        prev && prev.id === itemId
+          ? { ...prev, folderName: cleanFolder, updatedAt: nowIso }
+          : prev
+      );
+      try {
+        await fetch(`/api/library/${encodeURIComponent(itemId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folderName: cleanFolder || '' }),
+        });
+      } catch {
+        // Fallback already applied to local state
+      }
+    },
+    [libraryItems, createLibraryFolder]
+  );
 
   useEffect(() => {
     try {
@@ -932,75 +1912,103 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => {
     let mounted = true;
 
-    // Snapshot local cached state
-    let localUsers: RegisteredUserAccount[] = [];
-    let localTeams: Team[] = [];
-    let localMembers: TeamMember[] = [];
-    let localLibrary: LibraryItem[] = [];
+    const readLocalCacheSnapshot = () => {
+      let localUsers: RegisteredUserAccount[] = [];
+      let localTeams: Team[] = [];
+      let localMembers: TeamMember[] = [];
+      let localLibrary: LibraryItem[] = [];
+      let localFolders: LibraryFolder[] = [];
+      let localDeletedFolders: string[] = [];
+      let localTombstones: Partial<ClientTombstones> = {};
 
-    try {
-      const u = localStorage.getItem(STORAGE_USERS_KEY);
-      if (u) {
-        const parsed = JSON.parse(u);
-        if (Array.isArray(parsed)) localUsers = parsed;
+      try {
+        const u = localStorage.getItem(STORAGE_USERS_KEY);
+        if (u) {
+          const parsed = JSON.parse(u);
+          if (Array.isArray(parsed)) localUsers = parsed;
+        }
+        const t = localStorage.getItem(STORAGE_TEAMS_KEY);
+        if (t) {
+          const parsed = JSON.parse(t);
+          if (Array.isArray(parsed)) localTeams = parsed;
+        }
+        const m = localStorage.getItem(STORAGE_TEAM_MEMBERS_KEY);
+        if (m) {
+          const parsed = JSON.parse(m);
+          if (Array.isArray(parsed)) localMembers = parsed;
+        }
+        const l = localStorage.getItem(STORAGE_LIBRARY_KEY);
+        if (l) {
+          const parsed = JSON.parse(l);
+          if (Array.isArray(parsed)) localLibrary = parsed;
+        }
+        const f = localStorage.getItem(STORAGE_FOLDERS_KEY);
+        if (f) {
+          const parsed = JSON.parse(f);
+          if (Array.isArray(parsed)) localFolders = parsed;
+        }
+        const df = localStorage.getItem(STORAGE_DELETED_FOLDERS_KEY);
+        if (df) {
+          const parsed = JSON.parse(df);
+          if (Array.isArray(parsed)) localDeletedFolders = parsed;
+        }
+        const tb = localStorage.getItem(STORAGE_TOMBSTONES_KEY);
+        if (tb) {
+          const parsed = JSON.parse(tb);
+          if (parsed && typeof parsed === 'object') localTombstones = parsed;
+        }
+      } catch {
+        // ignore
       }
-      const t = localStorage.getItem(STORAGE_TEAMS_KEY);
-      if (t) {
-        const parsed = JSON.parse(t);
-        if (Array.isArray(parsed)) localTeams = parsed;
-      }
-      const m = localStorage.getItem(STORAGE_TEAM_MEMBERS_KEY);
-      if (m) {
-        const parsed = JSON.parse(m);
-        if (Array.isArray(parsed)) localMembers = parsed;
-      }
-      const l = localStorage.getItem(STORAGE_LIBRARY_KEY);
-      if (l) {
-        const parsed = JSON.parse(l);
-        if (Array.isArray(parsed)) localLibrary = parsed;
-      }
-    } catch {
-      // ignore
-    }
 
-    fetch('/api/state/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      return {
         users: localUsers,
         teams: localTeams,
         teamMembers: localMembers,
         libraryItems: localLibrary,
-      }),
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!mounted || !data) return;
-        if (Array.isArray(data.users) && data.users.length > 0) {
-          setRegisteredUsers(data.users as RegisteredUserAccount[]);
-        }
-        if (Array.isArray(data.teams)) {
-          setTeams(
-            (data.teams as Team[]).map((t, idx) => ({
-              ...t,
-              imageUrl: t.imageUrl || (idx % 2 === 0 ? ASSETS.posterInterstellar : ASSETS.posterMidnightTokyo),
-            }))
-          );
-        }
-        if (Array.isArray(data.teamMembers)) {
-          setAllTeamMembers(data.teamMembers as TeamMember[]);
-        }
-        if (Array.isArray(data.libraryItems)) {
-          setLibraryItems(data.libraryItems as LibraryItem[]);
-        }
+        libraryFolders: localFolders,
+        deletedFolderKeys: localDeletedFolders,
+        tombstones: localTombstones,
+      };
+    };
+
+    // Bidirectional sync helper: sends local state to backend so server never loses data on restart,
+    // and additively merges canonical server response into client state!
+    const syncWithBackend = () => {
+      const snapshot = readLocalCacheSnapshot();
+      fetch('/api/state/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(snapshot),
       })
-      .catch(() => {
-        // Fallback to localStorage / initial seed if server unreachable
-      });
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!mounted || !data) return;
+          applyIncomingServerState(data);
+        })
+        .catch(() => {
+          // Fallback to localStorage if server temporarily unreachable
+        });
+    };
+
+    syncWithBackend();
+
+    const pollInterval = window.setInterval(syncWithBackend, 6000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncWithBackend();
+      }
+    };
+    window.addEventListener('focus', syncWithBackend);
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       mounted = false;
+      clearInterval(pollInterval);
+      window.removeEventListener('focus', syncWithBackend);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, []);
+  }, [applyIncomingServerState]);
 
   // Connect to Realtime WebSocket Server (/ws)
   useEffect(() => {
@@ -1016,12 +2024,29 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         socket.onopen = () => {
           const effectiveTeamId = activeTeam.id || activeTeamId;
+          let clientState: Record<string, unknown> | undefined;
+          try {
+            clientState = {
+              users: JSON.parse(localStorage.getItem(STORAGE_USERS_KEY) || '[]'),
+              teams: JSON.parse(localStorage.getItem(STORAGE_TEAMS_KEY) || '[]'),
+              teamMembers: JSON.parse(localStorage.getItem(STORAGE_TEAM_MEMBERS_KEY) || '[]'),
+              libraryItems: JSON.parse(localStorage.getItem(STORAGE_LIBRARY_KEY) || '[]'),
+              libraryFolders: JSON.parse(localStorage.getItem(STORAGE_FOLDERS_KEY) || '[]'),
+              deletedFolderKeys: JSON.parse(
+                localStorage.getItem(STORAGE_DELETED_FOLDERS_KEY) || '[]'
+              ),
+              tombstones: JSON.parse(localStorage.getItem(STORAGE_TOMBSTONES_KEY) || '{}'),
+            };
+          } catch {
+            // ignore
+          }
           socket?.send(
             JSON.stringify({
               type: 'IDENTIFY',
               userId: currentUser.id,
               displayName: currentUser.displayName,
               teamId: effectiveTeamId,
+              clientState,
             })
           );
           if (activeHall && activeHall.hostId === currentUser.id) {
@@ -1131,9 +2156,55 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 ) {
                   setLatestVoiceChunk({
                     userId: data.userId,
+                    displayName: typeof data.displayName === 'string' ? data.displayName : undefined,
                     audioDataUrl: data.audioDataUrl,
+                    level: typeof data.level === 'number' ? data.level : undefined,
                     ts: Date.now(),
                   });
+                }
+                break;
+              }
+              case 'HALL_PARTICIPANT_MUTED': {
+                if (Array.isArray(data.members)) {
+                  setHallMembers(data.members as HallMember[]);
+                } else if (data.targetUserId) {
+                  const nowIso = new Date().toISOString();
+                  setHallMembers((prev) =>
+                    prev.map((m) =>
+                      m.userId === data.targetUserId
+                        ? {
+                            ...m,
+                            micEnabled: false,
+                            isSpeaking: false,
+                            mutedByName: data.mutedByName || 'Participant',
+                            updatedAt: nowIso,
+                          }
+                        : m
+                    )
+                  );
+                }
+                break;
+              }
+              case 'HALL_ALL_PARTICIPANTS_MUTED': {
+                if (Array.isArray(data.members)) {
+                  setHallMembers(data.members as HallMember[]);
+                } else if (data.mutedByUserId) {
+                  const nowIso = new Date().toISOString();
+                  setHallMembers((prev) =>
+                    prev.map((m) =>
+                      m.userId === data.mutedByUserId
+                        ? m
+                        : {
+                            ...m,
+                            micEnabled: false,
+                            isSpeaking: false,
+                            mutedByName: m.micEnabled
+                              ? data.mutedByName || 'Participant'
+                              : m.mutedByName,
+                            updatedAt: nowIso,
+                          }
+                    )
+                  );
                 }
                 break;
               }
@@ -1191,13 +2262,23 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 }
                 setActiveHall((prev) => {
                   if (!prev || prev.hostId === currentUser.id) return prev;
+                  const breakActive = Boolean(
+                    data.breakState !== undefined ? data.breakState?.isActive : prev.breakState?.isActive
+                  );
                   return {
                     ...prev,
-                    ...(typeof data.positionMs === 'number' ? { positionMs: data.positionMs } : {}),
+                    ...(data.breakState !== undefined ? { breakState: data.breakState } : {}),
+                    ...(typeof data.positionMs === 'number' && !breakActive
+                      ? { positionMs: data.positionMs }
+                      : {}),
                     ...(typeof data.durationMs === 'number' && data.durationMs > 0
                       ? { durationMs: data.durationMs }
                       : {}),
-                    ...(typeof data.isPlaying === 'boolean' ? { isPlaying: data.isPlaying } : {}),
+                    ...(typeof data.isPlaying === 'boolean' && !breakActive
+                      ? { isPlaying: data.isPlaying }
+                      : breakActive
+                      ? { isPlaying: false, status: 'PAUSED' }
+                      : {}),
                   };
                 });
                 break;
@@ -1218,26 +2299,54 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 break;
               }
               case 'AUTH_USERS_SYNC': {
-                if (Array.isArray(data.users)) {
-                  setRegisteredUsers(data.users as RegisteredUserAccount[]);
-                }
+                applyIncomingServerState({
+                  users: Array.isArray(data.users) ? data.users : undefined,
+                  tombstones: data.tombstones,
+                });
                 break;
               }
               case 'TEAMS_STATE_SYNC': {
-                if (Array.isArray(data.teams)) {
-                  setTeams(data.teams as Team[]);
-                }
-                if (Array.isArray(data.teamMembers)) {
-                  setAllTeamMembers(data.teamMembers as TeamMember[]);
-                }
+                applyIncomingServerState({
+                  teams: Array.isArray(data.teams) ? data.teams : undefined,
+                  teamMembers: Array.isArray(data.teamMembers) ? data.teamMembers : undefined,
+                  tombstones: data.tombstones,
+                });
                 break;
               }
               case 'LIBRARY_STATE_SYNC': {
-                if (data.deletedItemId) {
-                  setLibraryItems((prev) => prev.filter((i) => i.id !== data.deletedItemId));
-                } else if (Array.isArray(data.libraryItems)) {
-                  setLibraryItems(data.libraryItems as LibraryItem[]);
+                if (data.deletedTeamLibraryId) {
+                  setLibraryItems((prev) => {
+                    const removedIds = prev
+                      .filter((i) => i.teamId === data.deletedTeamLibraryId)
+                      .map((i) => i.id);
+                    if (removedIds.length > 0) {
+                      mergeIncomingTombstones({ libraryItems: removedIds });
+                    }
+                    return prev.filter((i) => i.teamId !== data.deletedTeamLibraryId);
+                  });
                 }
+                if (data.deletedItemId) {
+                  mergeIncomingTombstones({ libraryItems: [String(data.deletedItemId)] });
+                  setLibraryItems((prev) => prev.filter((i) => i.id !== data.deletedItemId));
+                }
+                if (Array.isArray(data.libraryItems)) {
+                  applyIncomingServerState({
+                    libraryItems: data.libraryItems,
+                    tombstones: data.tombstones,
+                  });
+                }
+                break;
+              }
+              case 'FOLDERS_STATE_SYNC': {
+                applyIncomingServerState({
+                  libraryFolders: Array.isArray(data.libraryFolders)
+                    ? data.libraryFolders
+                    : undefined,
+                  deletedFolderKeys: Array.isArray(data.deletedFolderKeys)
+                    ? data.deletedFolderKeys
+                    : undefined,
+                  tombstones: data.tombstones,
+                });
                 break;
               }
             }
@@ -1259,7 +2368,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       socket?.close();
     };
-  }, [activeTeam.id, activeTeamId, currentUser.id, currentUser.displayName]);
+  }, [activeTeam.id, activeTeamId, currentUser.id, currentUser.displayName, applyIncomingServerState, mergeIncomingTombstones]);
 
   // Re-identify immediately whenever activeTeam.id changes
   useEffect(() => {
@@ -1289,39 +2398,52 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return () => clearInterval(interval);
   }, [activeHall?.id, activeHall?.isPlaying, activeHall?.status, activeHall?.playbackSpeed]);
 
-  const persistSessionUser = useCallback((userId: string | null, email?: string) => {
-    setSessionUserId(userId);
-    setSessionEmail((email || '').toLowerCase());
-    try {
-      if (userId) {
-        localStorage.setItem(
-          STORAGE_SESSION_KEY,
-          JSON.stringify({
-            userId,
-            email: (email || '').toLowerCase(),
-            explicitlyAuthenticatedOnDevice: true,
-            savedAt: new Date().toISOString(),
-          })
-        );
-      } else {
-        localStorage.removeItem(STORAGE_SESSION_KEY);
+  const persistSessionUser = useCallback(
+    (userId: string | null, email?: string, username?: string) => {
+      setSessionUserId(userId);
+      setSessionEmail((email || '').toLowerCase());
+      setSessionUsername((username || '').trim().toLowerCase());
+      try {
+        if (userId) {
+          localStorage.setItem(
+            STORAGE_SESSION_KEY,
+            JSON.stringify({
+              userId,
+              email: (email || '').toLowerCase(),
+              username: (username || '').trim().toLowerCase(),
+              explicitlyAuthenticatedOnDevice: true,
+              savedAt: new Date().toISOString(),
+            })
+          );
+        } else {
+          localStorage.removeItem(STORAGE_SESSION_KEY);
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
+    },
+    []
+  );
+
+  // Automatically keep sessionUserId healed if canonical user ID was remapped on sync
+  useEffect(() => {
+    if (currentAccount && sessionUserId && currentAccount.id !== sessionUserId) {
+      persistSessionUser(currentAccount.id, currentAccount.email, currentAccount.displayName);
     }
-  }, []);
+  }, [currentAccount, sessionUserId, persistSessionUser]);
 
   const syncUsersBroadcast = useCallback(
     (nextUsers: RegisteredUserAccount[]) => {
-      setRegisteredUsers(nextUsers);
+      const deduped = deduplicateUsersList(nextUsers);
+      setRegisteredUsers(deduped);
       try {
-        localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(nextUsers));
+        localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(deduped));
       } catch {
         // ignore
       }
       sendWsMessage({
         type: 'AUTH_USERS_SYNC',
-        users: nextUsers,
+        users: deduped,
       });
     },
     [sendWsMessage]
@@ -1329,18 +2451,20 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const syncTeamsBroadcast = useCallback(
     (nextTeams: Team[], nextMembers: TeamMember[]) => {
-      setTeams(nextTeams);
-      setAllTeamMembers(nextMembers);
+      const dedupedTeams = deduplicateTeamsList(nextTeams);
+      const dedupedMembers = deduplicateTeamMembersList(nextMembers);
+      setTeams(dedupedTeams);
+      setAllTeamMembers(dedupedMembers);
       try {
-        localStorage.setItem(STORAGE_TEAMS_KEY, JSON.stringify(nextTeams));
-        localStorage.setItem(STORAGE_TEAM_MEMBERS_KEY, JSON.stringify(nextMembers));
+        localStorage.setItem(STORAGE_TEAMS_KEY, JSON.stringify(dedupedTeams));
+        localStorage.setItem(STORAGE_TEAM_MEMBERS_KEY, JSON.stringify(dedupedMembers));
       } catch {
         // ignore
       }
       sendWsMessage({
         type: 'TEAMS_STATE_SYNC',
-        teams: nextTeams,
-        teamMembers: nextMembers,
+        teams: dedupedTeams,
+        teamMembers: dedupedMembers,
       });
     },
     [sendWsMessage]
@@ -1353,7 +2477,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     ): Promise<{ ok: boolean; error?: string; account?: RegisteredUserAccount }> => {
       const cleanEmail = email.trim().toLowerCase();
       if (!cleanEmail || !password) {
-        return { ok: false, error: 'Please enter both email and password.' };
+        return { ok: false, error: 'Please enter your email/username and password.' };
       }
 
       // Call authoritative backend /api/auth/signin first
@@ -1366,9 +2490,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const data = await res.json();
         if (res.ok && data?.ok && data?.account) {
           if (Array.isArray(data.users)) {
-            setRegisteredUsers(data.users as RegisteredUserAccount[]);
+            setRegisteredUsers(deduplicateUsersList(data.users as RegisteredUserAccount[]));
           }
-          persistSessionUser(data.account.id, data.account.email);
+          persistSessionUser(data.account.id, data.account.email, data.account.displayName);
           return { ok: true, account: data.account as RegisteredUserAccount };
         }
         if (!res.ok && data?.error) {
@@ -1383,7 +2507,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       // Built-in Super Admin check
       if (
-        cleanEmail === SUPER_ADMIN_EMAIL.toLowerCase() &&
+        (cleanEmail === SUPER_ADMIN_EMAIL.toLowerCase() || cleanEmail === 'ameen') &&
         password === SUPER_ADMIN_PASSWORD
       ) {
         const superAccount: RegisteredUserAccount =
@@ -1400,17 +2524,19 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ? registeredUsers.map((u) => (u.id === approvedSuper.id ? approvedSuper : u))
           : [approvedSuper, ...registeredUsers];
         syncUsersBroadcast(nextUsers);
-        persistSessionUser(approvedSuper.id, approvedSuper.email);
+        persistSessionUser(approvedSuper.id, approvedSuper.email, approvedSuper.displayName);
         return { ok: true, account: approvedSuper };
       }
 
       const found = registeredUsers.find(
-        (u) => u.email.toLowerCase() === cleanEmail
+        (u) =>
+          u.email.toLowerCase() === cleanEmail ||
+          (u.displayName || '').trim().toLowerCase() === cleanEmail
       );
       if (!found) {
         return {
           ok: false,
-          error: 'No account found with that email. Please Sign Up first.',
+          error: 'No account found with that email or username. Please Sign Up first.',
         };
       }
       if (found.password && found.password !== password) {
@@ -1420,7 +2546,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }
 
-      persistSessionUser(found.id, found.email);
+      persistSessionUser(found.id, found.email, found.displayName);
       return { ok: true, account: found };
     },
     [registeredUsers, persistSessionUser, syncUsersBroadcast]
@@ -1459,9 +2585,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const data = await res.json();
         if (res.ok && data?.ok && data?.account) {
           if (Array.isArray(data.users)) {
-            setRegisteredUsers(data.users as RegisteredUserAccount[]);
+            setRegisteredUsers(deduplicateUsersList(data.users as RegisteredUserAccount[]));
           }
-          persistSessionUser(data.account.id, data.account.email);
+          persistSessionUser(data.account.id, data.account.email, data.account.displayName);
           return { ok: true, account: data.account as RegisteredUserAccount };
         }
         if (!res.ok && data?.error) {
@@ -1505,7 +2631,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const nextUsers = [newAccount, ...registeredUsers];
       syncUsersBroadcast(nextUsers);
-      persistSessionUser(newAccount.id, newAccount.email);
+      persistSessionUser(newAccount.id, newAccount.email, newAccount.displayName);
       return { ok: true, account: newAccount };
     },
     [registeredUsers, persistSessionUser, syncUsersBroadcast]
@@ -1555,9 +2681,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const data = await res.json();
         if (res.ok && data?.ok && data?.account) {
           if (Array.isArray(data.users)) {
-            setRegisteredUsers(data.users as RegisteredUserAccount[]);
+            setRegisteredUsers(deduplicateUsersList(data.users as RegisteredUserAccount[]));
           }
-          persistSessionUser(data.account.id, data.account.email);
+          persistSessionUser(data.account.id, data.account.email, data.account.displayName);
           return { ok: true, account: data.account as RegisteredUserAccount };
         }
         if (!res.ok && data?.error) {
@@ -1573,7 +2699,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           registeredUsers.find(
             (u) => u.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()
           ) || INITIAL_REGISTERED_USERS[0];
-        persistSessionUser(superAcc.id, superAcc.email);
+        persistSessionUser(superAcc.id, superAcc.email, superAcc.displayName);
         return { ok: true, account: superAcc };
       }
 
@@ -1581,7 +2707,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         (u) => u.email.toLowerCase() === gEmail
       );
       if (existing) {
-        persistSessionUser(existing.id, existing.email);
+        persistSessionUser(existing.id, existing.email, existing.displayName);
         return { ok: true, account: existing };
       }
 
@@ -1611,7 +2737,11 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const nextUsers = [newGoogleAccount, ...registeredUsers];
       syncUsersBroadcast(nextUsers);
-      persistSessionUser(newGoogleAccount.id, newGoogleAccount.email);
+      persistSessionUser(
+        newGoogleAccount.id,
+        newGoogleAccount.email,
+        newGoogleAccount.displayName
+      );
       return { ok: true, account: newGoogleAccount };
     },
     [registeredUsers, persistSessionUser, syncUsersBroadcast]
@@ -1687,6 +2817,10 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!isSuperAdmin) return;
       const target = registeredUsers.find((u) => u.id === userId);
       if (!target || target.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase()) return;
+      const removedMemberIds = allTeamMembers
+        .filter((m) => m.userId === userId)
+        .map((m) => m.id);
+      mergeIncomingTombstones({ users: [userId], teamMembers: removedMemberIds });
       const nextUsers = registeredUsers.filter((u) => u.id !== userId);
       syncUsersBroadcast(nextUsers);
       const nextMembers = allTeamMembers.filter((m) => m.userId !== userId);
@@ -1697,7 +2831,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         { method: 'DELETE' }
       ).catch(() => {});
     },
-    [isSuperAdmin, registeredUsers, allTeamMembers, teams, currentAccount?.id, syncUsersBroadcast, syncTeamsBroadcast]
+    [
+      isSuperAdmin,
+      registeredUsers,
+      allTeamMembers,
+      teams,
+      currentAccount?.id,
+      syncUsersBroadcast,
+      syncTeamsBroadcast,
+      mergeIncomingTombstones,
+    ]
   );
 
   const signInWithGoogle = useCallback(async () => {
@@ -1969,6 +3112,12 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (res.ok && data?.ok && data?.team) {
           if (Array.isArray(data.teams)) setTeams(data.teams as Team[]);
           if (Array.isArray(data.teamMembers)) setAllTeamMembers(data.teamMembers as TeamMember[]);
+          if (Array.isArray(data.libraryFolders)) {
+            setLibraryFolders(data.libraryFolders as LibraryFolder[]);
+          }
+          if (Array.isArray(data.deletedFolderKeys)) {
+            setDeletedFolderKeys(data.deletedFolderKeys as string[]);
+          }
           setActiveTeamId(data.team.id);
           return { ok: true, team: data.team as Team };
         }
@@ -2007,6 +3156,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const nextTeams = [...teams, newTeam];
       const nextMembers = [...allTeamMembers, ownerMember];
+      // Auto-create all Netflix default category folders for the newly created Team Library
+      const autoFoldersForNewTeam: LibraryFolder[] = DEFAULT_MOVIE_FOLDER_NAMES.map((catName) => ({
+        id: `folder_${id}_${catName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+        name: catName,
+        scope: id,
+        createdById: currentUser.id,
+        isNetflixDefault: true,
+        createdAt: new Date().toISOString(),
+      }));
+      setLibraryFolders((prev) => [...prev, ...autoFoldersForNewTeam]);
       syncTeamsBroadcast(nextTeams, nextMembers);
       setActiveTeamId(id);
 
@@ -2142,6 +3301,18 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }
 
+      const removedMemberIds = allTeamMembers
+        .filter((m) => m.teamId === teamId)
+        .map((m) => m.id);
+      const removedItemIds = libraryItems
+        .filter((i) => i.teamId === teamId)
+        .map((i) => i.id);
+      mergeIncomingTombstones({
+        teams: [teamId],
+        teamMembers: removedMemberIds,
+        libraryItems: removedItemIds,
+      });
+
       try {
         await fetch(
           `/api/teams/${encodeURIComponent(teamId)}?callerUserId=${encodeURIComponent(currentUser.id)}`,
@@ -2169,7 +3340,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return { ok: true };
     },
-    [teams, allTeamMembers, currentUser.id, firebaseUser, libraryItems, syncTeamsBroadcast, activeTeamId]
+    [
+      teams,
+      allTeamMembers,
+      currentUser.id,
+      firebaseUser,
+      libraryItems,
+      syncTeamsBroadcast,
+      activeTeamId,
+      mergeIncomingTombstones,
+    ]
   );
 
   const searchTeamByNameAndPin = useCallback(
@@ -2427,6 +3607,10 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }
 
+      mergeIncomingTombstones({
+        teamMembers: [target.id, `${activeTeam.id}_${memberUserId}`],
+      });
+
       const nextMembers = allTeamMembers.filter(
         (m) => !(m.teamId === activeTeam.id && m.userId === memberUserId)
       );
@@ -2439,7 +3623,14 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       return { ok: true };
     },
-    [allTeamMembers, activeTeam, currentUser.id, teams, syncTeamsBroadcast]
+    [
+      allTeamMembers,
+      activeTeam,
+      currentUser.id,
+      teams,
+      syncTeamsBroadcast,
+      mergeIncomingTombstones,
+    ]
   );
 
   const addLibraryItemFromUrl = useCallback(
@@ -2451,6 +3642,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       posterUrl?: string;
       sourceType?: 'DIRECT_URL' | 'WEBPAGE' | 'CLOUD_VIDEO';
       category: LibraryCategory;
+      folderName?: string;
       durationMs: number;
       year?: number;
       isDownloaded?: boolean;
@@ -2481,11 +3673,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         !userTeams.some((t) => t.id === requestedScope);
       const finalTeamId = isSelfScope ? '' : requestedScope;
       const finalLibraryScope: 'SELF' | 'TEAM' = isSelfScope ? 'SELF' : 'TEAM';
+      const cleanFolderName = (params.folderName || '').trim() || undefined;
+      if (cleanFolderName) {
+        createLibraryFolder(cleanFolderName, isSelfScope ? 'SELF' : finalTeamId);
+      }
 
       const newItem: LibraryItem = {
         id,
         teamId: finalTeamId,
         libraryScope: finalLibraryScope,
+        folderName: cleanFolderName,
         title: params.title.trim().slice(0, 160),
         description: params.description.trim().slice(0, 1000),
         posterUrl:
@@ -2520,7 +3717,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       return newItem;
     },
-    [activeLibraryScope, userTeams, currentUser.id, currentUser.displayName]
+    [activeLibraryScope, userTeams, currentUser.id, currentUser.displayName, createLibraryFolder]
   );
 
   // VidMate-style Link Sniffer & Auto-Downloader straight into Self or Team Library
@@ -2531,6 +3728,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       qualityLabel?: string;
       sizeBytes?: number;
       category?: LibraryCategory;
+      folderName?: string;
       preResolved?: WebpageResolutionResult;
       targetLibraryScope?: 'SELF' | string;
     }): Promise<LibraryItem | null> => {
@@ -2575,7 +3773,14 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const finalTitle = (params.title?.trim() || resolved.title || 'Downloaded Video').slice(0, 160);
       const chosenFormat =
-        resolved.availableFormats.find((f) => f.label === params.qualityLabel || f.id === params.qualityLabel) ||
+        resolved.availableFormats.find(
+          (f) =>
+            f.label === params.qualityLabel ||
+            f.id === params.qualityLabel ||
+            (params.qualityLabel && params.qualityLabel.startsWith(f.id))
+        ) ||
+        resolved.availableFormats.find((f) => f.id === '720p') ||
+        resolved.availableFormats.find((f) => f.id === '480p') ||
         resolved.availableFormats[0] || {
           id: '1080p',
           label: initialQuality,
@@ -2584,7 +3789,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           resolution: '1920x1080',
         };
 
-      const totalBytes = params.sizeBytes || chosenFormat.sizeBytes || 82837504;
+      const totalBytes = chosenFormat.sizeBytes || params.sizeBytes || 82837504;
       const posterUrl = resolved.thumbnailUrl || ASSETS.posterMidnightTokyo;
 
       // Update task to DOWNLOADING state
@@ -2637,13 +3842,16 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // Step 3: Automatically save the downloaded DIRECT VIDEO into the selected Library (Self or Team)
       const newItem = await addLibraryItemFromUrl({
         title: finalTitle,
-        description: `Direct video auto-downloaded from ${resolved.platform} (${chosenFormat.label} · ${chosenFormat.ext}).`,
+        description:
+          resolved.description ||
+          `Direct video auto-downloaded from ${resolved.platform} (${chosenFormat.label} · ${chosenFormat.ext}).`,
         videoUrl: playableStreamUrl,
         embedUrl: resolved.embedUrl || undefined,
         posterUrl,
         sourceType: 'DIRECT_URL',
-        category: params.category || 'RECENTLY_ADDED',
-        durationMs: 5400000,
+        category: params.category || 'MOVIES',
+        folderName: params.folderName,
+        durationMs: resolved.durationMs || 5400000,
         year: new Date().getFullYear(),
         isDownloaded: true,
         downloadQuality: chosenFormat.label,
@@ -2674,9 +3882,10 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const saveLibraryItemToDeviceDisk = useCallback((item: LibraryItem) => {
-    const streamTarget = item.videoUrl.startsWith('http')
-      ? `/api/webpage/download-stream?url=${encodeURIComponent(item.videoUrl)}&title=${encodeURIComponent(item.title)}`
-      : item.videoUrl;
+    const streamTarget =
+      item.videoUrl.startsWith('http') || item.videoUrl.startsWith('/api/video/stream')
+        ? `/api/webpage/download-stream?url=${encodeURIComponent(item.videoUrl)}&title=${encodeURIComponent(item.title)}`
+        : item.videoUrl;
     const a = document.createElement('a');
     a.href = streamTarget;
     a.download = `${item.title.replace(/[^a-zA-Z0-9._-]+/g, '_')}.mp4`;
@@ -2699,21 +3908,32 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!canDeleteLibraryItem(target)) {
         return {
           ok: false,
-          error: 'Only the Team Owner can manage (delete) Team Library videos.',
+          error: 'You do not have permission to delete this video.',
         };
       }
 
+      mergeIncomingTombstones({ libraryItems: [itemId] });
       setLastDeletedLibraryItem(target);
       setLibraryItems((prev) => prev.filter((i) => i.id !== itemId));
       setSelectedLibraryItem((prev) => (prev && prev.id === itemId ? null : prev));
       setDownloadTasks((prev) => prev.filter((t) => t.libraryItemId !== itemId));
 
-      fetch(
-        `/api/library/${encodeURIComponent(itemId)}?callerUserId=${encodeURIComponent(currentUser.id)}`,
-        {
-          method: 'DELETE',
+      try {
+        const res = await fetch(
+          `/api/library/${encodeURIComponent(itemId)}?callerUserId=${encodeURIComponent(currentUser.id)}`,
+          {
+            method: 'DELETE',
+          }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.tombstones) {
+            mergeIncomingTombstones(data.tombstones);
+          }
         }
-      ).catch(() => {});
+      } catch {
+        // Fallback already applied to local state
+      }
 
       if (firebaseUser) {
         try {
@@ -2725,13 +3945,70 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       return { ok: true };
     },
-    [libraryItems, canDeleteLibraryItem, currentUser.id, firebaseUser]
+    [libraryItems, canDeleteLibraryItem, currentUser.id, firebaseUser, mergeIncomingTombstones]
+  );
+
+  const deleteTeamLibrary = useCallback(
+    async (
+      teamId: string
+    ): Promise<{ ok: boolean; deletedCount?: number; error?: string }> => {
+      if (!teamId) {
+        return { ok: false, error: 'Team ID is required.' };
+      }
+
+      const itemsToDelete = libraryItems.filter((i) => i.teamId === teamId);
+      const deletedCount = itemsToDelete.length;
+
+      if (itemsToDelete.length > 0) {
+        setLastDeletedLibraryItem(itemsToDelete[0]);
+        mergeIncomingTombstones({ libraryItems: itemsToDelete.map((i) => i.id) });
+      }
+
+      setLibraryItems((prev) => prev.filter((i) => i.teamId !== teamId));
+      setSelectedLibraryItem((prev) => (prev && prev.teamId === teamId ? null : prev));
+      setDownloadTasks((prev) =>
+        prev.filter((t) => !itemsToDelete.some((item) => item.id === t.libraryItemId))
+      );
+
+      try {
+        const res = await fetch(
+          `/api/teams/${encodeURIComponent(teamId)}/library?callerUserId=${encodeURIComponent(currentUser.id)}`,
+          { method: 'DELETE' }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.tombstones) {
+            mergeIncomingTombstones(data.tombstones);
+          }
+        }
+      } catch {
+        // Fallback already applied to local state
+      }
+
+      if (firebaseUser) {
+        for (const item of itemsToDelete) {
+          try {
+            await deleteDoc(doc(db, 'libraryItems', item.id));
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      return { ok: true, deletedCount };
+    },
+    [libraryItems, currentUser.id, firebaseUser, mergeIncomingTombstones]
   );
 
   const restoreDeletedLibraryItem = useCallback(() => {
     if (!lastDeletedLibraryItem) return;
+    const restoredId = lastDeletedLibraryItem.id;
+    setTombstones((prev) => ({
+      ...prev,
+      libraryItems: prev.libraryItems.filter((id) => id !== restoredId),
+    }));
     setLibraryItems((prev) => {
-      if (prev.some((i) => i.id === lastDeletedLibraryItem.id)) return prev;
+      if (prev.some((i) => i.id === restoredId)) return prev;
       return [lastDeletedLibraryItem, ...prev];
     });
     fetch('/api/library', {
@@ -2750,7 +4027,8 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       description: string,
       category: LibraryCategory,
       onProgress: (pct: number) => void,
-      targetLibraryScope?: 'SELF' | string
+      targetLibraryScope?: 'SELF' | string,
+      folderName?: string
     ): Promise<LibraryItem> => {
       const id = `lib_upload_${Date.now()}`;
       let downloadUrl = URL.createObjectURL(file);
@@ -2762,6 +4040,10 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         !userTeams.some((t) => t.id === requestedScope);
       const finalTeamId = isSelfScope ? '' : requestedScope;
       const finalLibraryScope: 'SELF' | 'TEAM' = isSelfScope ? 'SELF' : 'TEAM';
+      const cleanFolderName = (folderName || '').trim() || undefined;
+      if (cleanFolderName) {
+        createLibraryFolder(cleanFolderName, isSelfScope ? 'SELF' : finalTeamId);
+      }
 
       if (firebaseUser) {
         try {
@@ -2802,6 +4084,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         id,
         teamId: finalTeamId,
         libraryScope: finalLibraryScope,
+        folderName: cleanFolderName,
         title: (title.trim() || file.name).slice(0, 160),
         description:
           description.trim().slice(0, 1000) ||
@@ -2828,7 +4111,14 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }).catch(() => {});
       return newItem;
     },
-    [activeLibraryScope, userTeams, currentUser.id, currentUser.displayName, firebaseUser]
+    [
+      activeLibraryScope,
+      userTeams,
+      currentUser.id,
+      currentUser.displayName,
+      firebaseUser,
+      createLibraryFolder,
+    ]
   );
 
   // Section 11: Select device video WITHOUT uploading
@@ -3291,10 +4581,24 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Section 4 & 16: HOST-ONLY PLAYBACK CONTROLS
   const hostPlay = useCallback(() => {
     if (!activeHall || activeHall.hostId !== currentUser.id) return;
+    const hadBreak = Boolean(activeHall.breakState?.isActive);
     setActiveHall((prev) =>
-      prev ? { ...prev, isPlaying: true, status: 'LIVE', updatedAt: new Date().toISOString() } : prev
+      prev
+        ? {
+            ...prev,
+            isPlaying: true,
+            status: 'LIVE',
+            breakState: null,
+            updatedAt: new Date().toISOString(),
+          }
+        : prev
     );
-    appendActivityLog('PLAYBACK_PLAY', `${currentUser.displayName} resumed playback`);
+    appendActivityLog(
+      hadBreak ? 'INTERVAL_BREAK_ENDED' : 'PLAYBACK_PLAY',
+      hadBreak
+        ? `${currentUser.displayName} ended break and resumed playback`
+        : `${currentUser.displayName} resumed playback`
+    );
     sendWsMessage({
       type: 'HOST_PLAYBACK_UPDATE',
       hallId: activeHall.id,
@@ -3302,6 +4606,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       isPlaying: true,
       status: 'LIVE',
       positionMs: activeHall.positionMs,
+      breakState: null,
     });
   }, [activeHall, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]);
 
@@ -3454,12 +4759,15 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const hostStartIntervalBreak = useCallback(
     (durationSec: number, message = 'Intermission Break') => {
       if (!activeHall || activeHall.hostId !== currentUser.id) return;
+      const safeDuration = Math.max(10, Math.round(durationSec));
       const now = Date.now();
-      const endsAt = now + durationSec * 1000;
+      const endsAt = now + safeDuration * 1000;
       const breakState: IntervalBreakState = {
         isActive: true,
-        message,
-        totalDurationSec: durationSec,
+        isPaused: false,
+        remainingSecWhenPaused: undefined,
+        message: message.trim() || 'Popcorn & Rest Break 🍿',
+        totalDurationSec: safeDuration,
         endsAt,
         startedAt: now,
         startedByName: currentUser.displayName,
@@ -3475,9 +4783,13 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             }
           : prev
       );
+      const minsText =
+        safeDuration >= 60 && safeDuration % 60 === 0
+          ? `${Math.round(safeDuration / 60)} min`
+          : `${Math.floor(safeDuration / 60)}:${(safeDuration % 60).toString().padStart(2, '0')}`;
       appendActivityLog(
         'INTERVAL_BREAK_STARTED',
-        `${currentUser.displayName} called an Interval Break (${Math.max(1, Math.round(durationSec / 60))} min) · ${message}`
+        `${currentUser.displayName} started a ${minsText} Interval Break · ${breakState.message}`
       );
       sendWsMessage({
         type: 'HOST_PLAYBACK_UPDATE',
@@ -3491,6 +4803,148 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     },
     [activeHall, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]
   );
+
+  const hostAdjustIntervalBreak = useCallback(
+    (deltaSec: number) => {
+      if (!activeHall || activeHall.hostId !== currentUser.id || !activeHall.breakState?.isActive) {
+        return;
+      }
+      const cur = activeHall.breakState;
+      const now = Date.now();
+      const currentRemaining = cur.isPaused
+        ? Math.max(0, cur.remainingSecWhenPaused ?? cur.totalDurationSec)
+        : Math.max(0, Math.ceil((cur.endsAt - now) / 1000));
+      const nextRemaining = Math.max(5, Math.min(7200, currentRemaining + deltaSec));
+      const nextTotal = Math.max(cur.totalDurationSec, nextRemaining);
+      const nextBreakState: IntervalBreakState = {
+        ...cur,
+        totalDurationSec: nextTotal,
+        remainingSecWhenPaused: cur.isPaused ? nextRemaining : undefined,
+        endsAt: now + nextRemaining * 1000,
+      };
+      setActiveHall((prev) =>
+        prev
+          ? {
+              ...prev,
+              isPlaying: false,
+              status: 'PAUSED',
+              breakState: nextBreakState,
+              updatedAt: new Date().toISOString(),
+            }
+          : prev
+      );
+      const sign = deltaSec >= 0 ? '+' : '-';
+      const absSec = Math.abs(deltaSec);
+      const deltaLabel =
+        absSec >= 60 && absSec % 60 === 0 ? `${absSec / 60}m` : `${absSec}s`;
+      appendActivityLog(
+        'INTERVAL_BREAK_UPDATED',
+        `${currentUser.displayName} adjusted break timer (${sign}${deltaLabel})`
+      );
+      sendWsMessage({
+        type: 'HOST_PLAYBACK_UPDATE',
+        hallId: activeHall.id,
+        userId: currentUser.id,
+        isPlaying: false,
+        status: 'PAUSED',
+        positionMs: activeHall.positionMs,
+        breakState: nextBreakState,
+      });
+    },
+    [activeHall, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]
+  );
+
+  const hostTogglePauseIntervalBreak = useCallback(() => {
+    if (!activeHall || activeHall.hostId !== currentUser.id || !activeHall.breakState?.isActive) {
+      return;
+    }
+    const cur = activeHall.breakState;
+    const now = Date.now();
+    const willPause = !cur.isPaused;
+    const currentRemaining = cur.isPaused
+      ? Math.max(1, cur.remainingSecWhenPaused ?? cur.totalDurationSec)
+      : Math.max(1, Math.ceil((cur.endsAt - now) / 1000));
+    const nextBreakState: IntervalBreakState = willPause
+      ? {
+          ...cur,
+          isPaused: true,
+          remainingSecWhenPaused: currentRemaining,
+          endsAt: now + currentRemaining * 1000,
+        }
+      : {
+          ...cur,
+          isPaused: false,
+          remainingSecWhenPaused: undefined,
+          endsAt: now + currentRemaining * 1000,
+        };
+
+    setActiveHall((prev) =>
+      prev
+        ? {
+            ...prev,
+            isPlaying: false,
+            status: 'PAUSED',
+            breakState: nextBreakState,
+            updatedAt: new Date().toISOString(),
+          }
+        : prev
+    );
+    appendActivityLog(
+      willPause ? 'INTERVAL_BREAK_PAUSED' : 'INTERVAL_BREAK_RESUMED',
+      willPause
+        ? `${currentUser.displayName} paused the break countdown timer`
+        : `${currentUser.displayName} resumed the break countdown timer`
+    );
+    sendWsMessage({
+      type: 'HOST_PLAYBACK_UPDATE',
+      hallId: activeHall.id,
+      userId: currentUser.id,
+      isPlaying: false,
+      status: 'PAUSED',
+      positionMs: activeHall.positionMs,
+      breakState: nextBreakState,
+    });
+  }, [activeHall, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]);
+
+  const hostResetIntervalBreak = useCallback(() => {
+    if (!activeHall || activeHall.hostId !== currentUser.id || !activeHall.breakState?.isActive) {
+      return;
+    }
+    const cur = activeHall.breakState;
+    const now = Date.now();
+    const totalSec = Math.max(10, cur.totalDurationSec || 180);
+    const nextBreakState: IntervalBreakState = {
+      ...cur,
+      isPaused: false,
+      remainingSecWhenPaused: undefined,
+      endsAt: now + totalSec * 1000,
+      startedAt: now,
+    };
+    setActiveHall((prev) =>
+      prev
+        ? {
+            ...prev,
+            isPlaying: false,
+            status: 'PAUSED',
+            breakState: nextBreakState,
+            updatedAt: new Date().toISOString(),
+          }
+        : prev
+    );
+    appendActivityLog(
+      'INTERVAL_BREAK_UPDATED',
+      `${currentUser.displayName} reset break timer to ${Math.floor(totalSec / 60)}:${(totalSec % 60).toString().padStart(2, '0')}`
+    );
+    sendWsMessage({
+      type: 'HOST_PLAYBACK_UPDATE',
+      hallId: activeHall.id,
+      userId: currentUser.id,
+      isPlaying: false,
+      status: 'PAUSED',
+      positionMs: activeHall.positionMs,
+      breakState: nextBreakState,
+    });
+  }, [activeHall, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]);
 
   const hostEndIntervalBreak = useCallback(
     (autoPlayAfterBreak = true) => {
@@ -3632,17 +5086,81 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const broadcastVoiceChunk = useCallback(
-    (audioDataUrl: string) => {
+    (audioDataUrl: string, level?: number) => {
       if (!activeHall) return;
       sendWsMessage({
         type: 'HALL_VOICE_CHUNK',
         hallId: activeHall.id,
         userId: currentUser.id,
+        displayName: currentUser.displayName,
         audioDataUrl,
+        level,
       });
     },
-    [activeHall, currentUser.id, sendWsMessage]
+    [activeHall, currentUser.id, currentUser.displayName, sendWsMessage]
   );
+
+  const muteHallParticipant = useCallback(
+    (targetUserId: string) => {
+      if (!activeHall || !targetUserId) return;
+      const targetMember = hallMembers.find((m) => m.userId === targetUserId);
+      const targetName = targetMember?.displayName || 'Participant';
+      const nowIso = new Date().toISOString();
+      setHallMembers((prev) =>
+        prev.map((m) =>
+          m.userId === targetUserId
+            ? {
+                ...m,
+                micEnabled: false,
+                isSpeaking: false,
+                mutedByName: currentUser.displayName,
+                updatedAt: nowIso,
+              }
+            : m
+        )
+      );
+      appendActivityLog(
+        'PARTICIPANT_MUTED',
+        `${currentUser.displayName} muted ${targetName}'s microphone`
+      );
+      sendWsMessage({
+        type: 'HALL_MUTE_PARTICIPANT',
+        hallId: activeHall.id,
+        targetUserId,
+        mutedByUserId: currentUser.id,
+        mutedByName: currentUser.displayName,
+      });
+    },
+    [activeHall, hallMembers, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]
+  );
+
+  const muteAllOtherParticipants = useCallback(() => {
+    if (!activeHall) return;
+    const nowIso = new Date().toISOString();
+    setHallMembers((prev) =>
+      prev.map((m) =>
+        m.userId === currentUser.id
+          ? m
+          : {
+              ...m,
+              micEnabled: false,
+              isSpeaking: false,
+              mutedByName: m.micEnabled ? currentUser.displayName : m.mutedByName,
+              updatedAt: nowIso,
+            }
+      )
+    );
+    appendActivityLog(
+      'PARTICIPANT_MUTED',
+      `${currentUser.displayName} muted all disturbing participants in the Hall`
+    );
+    sendWsMessage({
+      type: 'HALL_MUTE_ALL_PARTICIPANTS',
+      hallId: activeHall.id,
+      mutedByUserId: currentUser.id,
+      mutedByName: currentUser.displayName,
+    });
+  }, [activeHall, currentUser.id, currentUser.displayName, appendActivityLog, sendWsMessage]);
 
   const updateLocalSpeakingState = useCallback(
     (isSpeaking: boolean) => {
@@ -3734,7 +5252,13 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const updatedList = existing
         ? prev.map((m) =>
             m.userId === currentUser.id
-              ? { ...m, micEnabled: nextMic, isSpeaking: false, updatedAt: nowIso }
+              ? {
+                  ...m,
+                  micEnabled: nextMic,
+                  isSpeaking: false,
+                  mutedByName: undefined,
+                  updatedAt: nowIso,
+                }
               : m
           )
         : [
@@ -3750,6 +5274,7 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               micEnabled: nextMic,
               cameraEnabled: false,
               isSpeaking: false,
+              mutedByName: undefined,
               joinedAt: nowIso,
               updatedAt: nowIso,
             },
@@ -3912,6 +5437,15 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     selectedLibraryItem,
     setSelectedLibraryItem,
     deleteLibraryItem,
+    deleteTeamLibrary,
+    libraryFolders,
+    getFoldersForScope,
+    canManageFoldersForScope,
+    hasDeletedDefaultFoldersForScope,
+    createLibraryFolder,
+    deleteLibraryFolder,
+    restoreDefaultNetflixFolders,
+    moveLibraryItemToFolder,
     lastDeletedLibraryItem,
     restoreDeletedLibraryItem,
     addLibraryItemFromUrl,
@@ -3954,6 +5488,9 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     hostChangeMovie,
     hostUpdatePositionSilent,
     hostStartIntervalBreak,
+    hostAdjustIntervalBreak,
+    hostTogglePauseIntervalBreak,
+    hostResetIntervalBreak,
     hostEndIntervalBreak,
     activeScreenStream,
     screenShareError,
@@ -3966,6 +5503,8 @@ export const ChillMateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     sendHallReaction,
     toggleLocalMic,
     toggleLocalCamera,
+    muteHallParticipant,
+    muteAllOtherParticipants,
     remoteMemberCamFrames,
     broadcastMemberCameraFrame,
     latestVoiceChunk,

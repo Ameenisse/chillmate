@@ -50,7 +50,13 @@ export type HallActivityEventType =
   | 'SCREEN_SHARE_STARTED'
   | 'SCREEN_SHARE_STOPPED'
   | 'INTERVAL_BREAK_STARTED'
+  | 'INTERVAL_BREAK_UPDATED'
+  | 'INTERVAL_BREAK_PAUSED'
+  | 'INTERVAL_BREAK_RESUMED'
   | 'INTERVAL_BREAK_ENDED'
+  | 'PARTICIPANT_MUTED'
+  | 'PARTICIPANT_UNMUTED'
+  | 'VOICE_OVER_STARTED'
   | 'HALL_ENDED';
 
 export type ReactionEmoji = '❤️' | '😂' | '😮' | '🔥' | '👏' | '🥹' | '🍿' | '🎬';
@@ -123,10 +129,38 @@ export interface LibraryDownloadTask {
   createdAt: string;
 }
 
+export const NETFLIX_DEFAULT_CATEGORY_FOLDERS = [
+  'Trending Now',
+  'Action & Adventure',
+  'Sci-Fi & Fantasy',
+  'Comedies',
+  'Dramas',
+  'Thrillers & Mystery',
+  'Horror',
+  'Romance',
+  'Anime',
+  'Documentaries',
+  'Kids & Family',
+  'Crime & True Story',
+  'Classic & Award-Winning',
+  'TV Shows & Series',
+  'Stand-Up & Specials',
+] as const;
+
+export interface LibraryFolder {
+  id: string;
+  name: string;
+  scope: 'SELF' | string; // 'SELF' | `self_${userId}` | teamId
+  createdById: string;
+  isNetflixDefault?: boolean;
+  createdAt: string;
+}
+
 export interface LibraryItem {
   id: string;
   teamId: string;
   libraryScope?: 'SELF' | 'TEAM';
+  folderName?: string;
   title: string;
   description?: string;
   posterUrl?: string;
@@ -153,6 +187,8 @@ export interface LibraryItem {
 
 export interface IntervalBreakState {
   isActive: boolean;
+  isPaused?: boolean;
+  remainingSecWhenPaused?: number;
   message?: string;
   totalDurationSec: number;
   endsAt: number; // unix timestamp in ms
@@ -198,6 +234,7 @@ export interface HallMember {
   micEnabled: boolean;
   cameraEnabled: boolean;
   isSpeaking: boolean;
+  mutedByName?: string;
   joinedAt: string;
   updatedAt: string;
 }

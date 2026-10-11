@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AppWindow,
   Check,
   Clock,
+  Coffee,
   Crown,
   Film,
   HardDrive,
@@ -47,6 +48,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
     selectTeam,
     setSelectedLibraryItem,
     deleteLibraryItem,
+    deleteTeamLibrary,
     joinRequests,
     requestToJoinHall,
     cancelJoinRequest,
@@ -63,6 +65,36 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const pendingHostRequests = activeHall
     ? joinRequests.filter((r) => r.hallId === activeHall.id && r.status === 'PENDING')
     : [];
+
+  const [homeBreakRemainingSec, setHomeBreakRemainingSec] = useState<number>(0);
+
+  useEffect(() => {
+    if (!activeHall?.breakState?.isActive) {
+      setHomeBreakRemainingSec(0);
+      return;
+    }
+    const update = () => {
+      const b = activeHall.breakState;
+      if (!b || !b.isActive) {
+        setHomeBreakRemainingSec(0);
+        return;
+      }
+      if (b.isPaused) {
+        setHomeBreakRemainingSec(Math.max(0, b.remainingSecWhenPaused ?? b.totalDurationSec));
+        return;
+      }
+      setHomeBreakRemainingSec(Math.max(0, Math.ceil(((b.endsAt || Date.now()) - Date.now()) / 1000)));
+    };
+    update();
+    const id = setInterval(update, 500);
+    return () => clearInterval(id);
+  }, [
+    activeHall?.breakState?.isActive,
+    activeHall?.breakState?.isPaused,
+    activeHall?.breakState?.remainingSecWhenPaused,
+    activeHall?.breakState?.endsAt,
+    activeHall?.breakState?.totalDurationSec,
+  ]);
 
   const continueWatching = allAccessibleLibraryItems.filter((i) => (i.progressMs || 0) > 0);
   const moviesRow = allAccessibleLibraryItems.filter((i) => i.category === 'MOVIES');
@@ -99,20 +131,37 @@ export const HomeView: React.FC<HomeViewProps> = ({
               </span>
             )}
           </div>
-          <button
-            onClick={() => {
-              if (options?.isSelfRow) {
-                setActiveLibraryScope('SELF');
-              } else if (options?.teamId) {
-                selectTeam(options.teamId);
-                setActiveLibraryScope(options.teamId);
-              }
-              onNavigateTab('LIBRARY');
-            }}
-            className="text-xs font-medium text-zinc-400 hover:text-zinc-100 transition-colors"
-          >
-            See All
-          </button>
+          <div className="flex items-center gap-3">
+            {options?.teamId && items.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (options.teamId) {
+                    void deleteTeamLibrary(options.teamId);
+                  }
+                }}
+                className="text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors"
+                title={`Delete all videos in ${title}`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Team Library</span>
+              </button>
+            )}
+            <button
+              onClick={() => {
+                if (options?.isSelfRow) {
+                  setActiveLibraryScope('SELF');
+                } else if (options?.teamId) {
+                  selectTeam(options.teamId);
+                  setActiveLibraryScope(options.teamId);
+                }
+                onNavigateTab('LIBRARY');
+              }}
+              className="text-xs font-medium text-zinc-400 hover:text-zinc-100 transition-colors"
+            >
+              See All
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -121,9 +170,10 @@ export const HomeView: React.FC<HomeViewProps> = ({
               item.progressMs && item.durationMs
                 ? Math.min(100, Math.round((item.progressMs / item.durationMs) * 100))
                 : 0;
-            const isSelfItem = item.libraryScope === 'SELF' || item.teamId === 'SELF';
+            const isSelfItem =
+              !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
             const itemTeam = !isSelfItem
-              ? teams.find((t) => t.id === (item.libraryScope || item.teamId))
+              ? teams.find((t) => t.id === item.teamId)
               : undefined;
             const canDelete = canDeleteLibraryItem(item);
 
@@ -315,6 +365,22 @@ export const HomeView: React.FC<HomeViewProps> = ({
                     <Clock className="w-3.5 h-3.5" />
                     {formatDurationMs(activeHall.positionMs)}
                   </span>
+                  {activeHall.breakState?.isActive && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono-tabular font-bold animate-pulse">
+                        <Coffee className="w-3.5 h-3.5 text-amber-400" />
+                        <span>
+                          INTERVAL BREAK (
+                          {Math.floor(homeBreakRemainingSec / 60)
+                            .toString()
+                            .padStart(2, '0')}
+                          :
+                          {(homeBreakRemainingSec % 60).toString().padStart(2, '0')})
+                        </span>
+                      </span>
+                    </>
+                  )}
                   {activeHall.sourceType === 'DEVICE_LOCAL' && (
                     <>
                       <span aria-hidden="true">·</span>

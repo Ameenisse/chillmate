@@ -1,5 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, CloudUpload, Film, Loader2, Lock, Users, X } from 'lucide-react';
+import {
+  CheckCircle2,
+  CloudUpload,
+  Film,
+  Folder,
+  FolderPlus,
+  Loader2,
+  Lock,
+  Users,
+  X,
+} from 'lucide-react';
 import { useChillMate } from '../../context/ChillMateContext';
 import { LibraryCategory } from '../../types';
 import { formatFileSize } from '../../utils/media';
@@ -10,7 +20,13 @@ interface UploadLibraryModalProps {
 }
 
 export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, onClose }) => {
-  const { uploadVideoToTeamLibrary, activeLibraryScope, teams } = useChillMate();
+  const {
+    uploadVideoToTeamLibrary,
+    activeLibraryScope,
+    teams,
+    getFoldersForScope,
+    createLibraryFolder,
+  } = useChillMate();
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -18,9 +34,13 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<LibraryCategory>('MOVIES');
   const [targetScope, setTargetScope] = useState<'SELF' | string>(activeLibraryScope);
+  const [selectedFolder, setSelectedFolder] = useState<string>('Action & Sci-Fi');
+  const [customNewFolder, setCustomNewFolder] = useState<string>('');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [completed, setCompleted] = useState(false);
+
+  const foldersForTargetScope = getFoldersForScope(targetScope);
 
   useEffect(() => {
     if (isOpen) {
@@ -37,6 +57,10 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedFile) return;
+    const finalFolder = customNewFolder.trim() || selectedFolder || undefined;
+    if (customNewFolder.trim()) {
+      createLibraryFolder(customNewFolder.trim(), targetScope);
+    }
     setUploading(true);
     setProgress(5);
     await uploadVideoToTeamLibrary(
@@ -45,7 +69,8 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
       description,
       category,
       (pct) => setProgress(pct),
-      targetScope
+      targetScope,
+      finalFolder
     );
     setUploading(false);
     setCompleted(true);
@@ -54,6 +79,7 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
       setSelectedFile(null);
       setTitle('');
       setDescription('');
+      setCustomNewFolder('');
       setProgress(0);
       onClose();
     }, 900);
@@ -191,6 +217,61 @@ export const UploadLibraryModal: React.FC<UploadLibraryModalProps> = ({ isOpen, 
                   {cat}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Movie Folder Selector */}
+          <div className="space-y-2">
+            <label className="block text-xs text-zinc-400">
+              Movie Folder (Movies Manage by Folders)
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedFolder('');
+                  setCustomNewFolder('');
+                }}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors ${
+                  selectedFolder === '' && !customNewFolder.trim()
+                    ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                No Folder
+              </button>
+              {foldersForTargetScope.map((folder) => {
+                const active = selectedFolder === folder && !customNewFolder.trim();
+                return (
+                  <button
+                    key={folder}
+                    type="button"
+                    onClick={() => {
+                      setSelectedFolder(folder);
+                      setCustomNewFolder('');
+                    }}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                      active
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-200'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Folder className="w-3 h-3 text-amber-400" />
+                    <span>{folder}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="relative">
+              <FolderPlus className="w-3.5 h-3.5 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={customNewFolder}
+                onChange={(e) => setCustomNewFolder(e.target.value)}
+                placeholder="Or type a new Movie Folder name..."
+                maxLength={60}
+                className="w-full pl-8 pr-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+              />
             </div>
           </div>
 

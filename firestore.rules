@@ -173,10 +173,11 @@ service cloud.firestore {
     // 4. LibraryItem Validation
     function isValidLibraryItem(data) {
       return data.keys().hasAll(['id', 'teamId', 'title', 'videoUrl', 'sourceType', 'category', 'durationMs', 'addedById', 'addedByName', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['id', 'teamId', 'libraryScope', 'title', 'description', 'posterUrl', 'backdropUrl', 'videoUrl', 'embedUrl', 'sourceType', 'category', 'durationMs', 'year', 'addedById', 'addedByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'teamId', 'libraryScope', 'folderName', 'title', 'description', 'posterUrl', 'backdropUrl', 'videoUrl', 'embedUrl', 'sourceType', 'category', 'durationMs', 'year', 'addedById', 'addedByName', 'createdAt', 'updatedAt']) &&
         isValidId(data.id) &&
         isValidId(data.teamId) &&
         (!('libraryScope' in data) || (data.libraryScope is string && data.libraryScope.size() >= 1 && data.libraryScope.size() <= 128)) &&
+        (!('folderName' in data) || (data.folderName is string && data.folderName.size() <= 120)) &&
         data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
         (!('description' in data) || (data.description is string && data.description.size() <= 1000)) &&
         (!('posterUrl' in data) || (data.posterUrl is string && data.posterUrl.size() <= 1024)) &&
@@ -215,9 +216,9 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (
           (existing().teamId == 'SELF' && existing().addedById == request.auth.uid) ||
-          (existing().teamId != 'SELF' && isTeamOwner(existing().teamId))
+          (existing().teamId != 'SELF' && (isTeamMember(existing().teamId) || isTeamOwner(existing().teamId)))
         ) &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'posterUrl', 'backdropUrl', 'category', 'durationMs', 'year', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'posterUrl', 'backdropUrl', 'category', 'folderName', 'durationMs', 'year', 'updatedAt']);
       allow delete: if isVerifiedUser() && isValidId(itemId) &&
         (
           (existing().teamId == 'SELF' && existing().addedById == request.auth.uid) ||

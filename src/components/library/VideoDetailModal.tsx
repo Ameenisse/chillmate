@@ -1,7 +1,25 @@
-import React from 'react';
-import { CheckCircle2, Crown, Download, Lock, Play, Radio, Trash2, Users, X } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  CheckCircle2,
+  Crown,
+  Download,
+  Folder,
+  FolderPlus,
+  Lock,
+  Play,
+  Radio,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
 import { useChillMate } from '../../context/ChillMateContext';
-import { ASSETS, formatFileSize, formatHumanDuration } from '../../utils/media';
+import {
+  ASSETS,
+  formatFileSize,
+  formatHumanDuration,
+  resolveYouTubeVideoId,
+} from '../../utils/media';
+import { YouTubeVideoPlayer } from '../player/YouTubeVideoPlayer';
 
 export const VideoDetailModal: React.FC = () => {
   const {
@@ -12,15 +30,27 @@ export const VideoDetailModal: React.FC = () => {
     saveLibraryItemToDeviceDisk,
     deleteLibraryItem,
     canDeleteLibraryItem,
+    getFoldersForScope,
+    moveLibraryItemToFolder,
     teams,
   } = useChillMate();
+
+  const [newFolderName, setNewFolderName] = useState('');
 
   if (!selectedLibraryItem) return null;
 
   const item = selectedLibraryItem;
+  const ytVideoId = resolveYouTubeVideoId({
+    videoUrl: item.videoUrl,
+    embedUrl: item.embedUrl,
+    originalPageUrl: item.originalPageUrl,
+    posterUrl: item.posterUrl,
+  });
   const canDelete = canDeleteLibraryItem(item);
   const isSelfItem =
     !item.teamId || item.teamId.startsWith('self_') || item.libraryScope === 'SELF';
+  const itemScope = isSelfItem ? 'SELF' : item.teamId;
+  const availableFolders = getFoldersForScope(itemScope);
   const itemTeamName = !isSelfItem
     ? teams.find((t) => t.id === item.teamId)?.name || 'Team'
     : 'My Self Library';
@@ -60,74 +90,97 @@ export const VideoDetailModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl rounded-2xl bg-zinc-950 border border-zinc-800 shadow-2xl overflow-hidden">
-        {/* Backdrop */}
-        <div className="relative h-56 sm:h-64 bg-zinc-900 overflow-hidden">
-          <img
-            src={item.backdropUrl || item.posterUrl || ASSETS.backdropCinema}
-            alt={item.title}
-            referrerPolicy="no-referrer"
-            className="w-full h-full object-cover opacity-75"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/50 to-transparent" />
+      <div className="w-full max-w-2xl rounded-2xl bg-zinc-950 border border-zinc-800 shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto">
+        {/* Live Inline Video Player Preview */}
+        <div className="relative aspect-video bg-black overflow-hidden">
+          {ytVideoId ? (
+            <YouTubeVideoPlayer
+              videoId={ytVideoId}
+              title={item.title}
+              isPlaying={true}
+              className="w-full h-full"
+            />
+          ) : (
+            <video
+              key={item.videoUrl}
+              src={item.videoUrl}
+              poster={item.backdropUrl || item.posterUrl || ASSETS.backdropCinema}
+              controls
+              autoPlay
+              preload="auto"
+              playsInline
+              onError={(e) => {
+                const v = e.currentTarget;
+                if (!v.src.includes('/api/video/stream') && item.videoUrl.startsWith('http')) {
+                  v.src = `/api/video/stream?url=${encodeURIComponent(item.videoUrl)}`;
+                  v.load();
+                } else if (v.src.includes('res=1080')) {
+                  v.src = item.videoUrl.replace('res=1080', 'res=480');
+                  v.load();
+                }
+              }}
+              className="w-full h-full object-contain bg-black"
+            />
+          )}
           <button
             onClick={() => setSelectedLibraryItem(null)}
-            className="absolute top-4 right-4 min-h-[40px] min-w-[40px] rounded-xl bg-black/60 hover:bg-black/80 text-zinc-200 flex items-center justify-center transition-colors"
+            className="absolute top-3 right-3 z-20 min-h-[38px] min-w-[38px] rounded-xl bg-black/75 hover:bg-black/95 border border-white/15 text-zinc-200 flex items-center justify-center transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
+        </div>
 
-          <div className="absolute bottom-4 left-6 right-6 flex items-end gap-4">
-            <img
-              src={item.posterUrl || ASSETS.posterInterstellar}
-              alt={item.title}
-              referrerPolicy="no-referrer"
-              className="w-20 h-28 sm:w-24 sm:h-36 rounded-xl object-cover shadow-xl border border-white/10 shrink-0"
-            />
-            <div className="min-w-0 pb-1">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                <span>{item.category}</span>
-                {item.year && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono-tabular">{item.year}</span>
-                  </>
+        {/* Title & Metadata Header */}
+        <div className="px-6 pt-4 pb-1 flex items-center gap-4 border-b border-zinc-800/80">
+          <img
+            src={item.posterUrl || ASSETS.posterInterstellar}
+            alt={item.title}
+            referrerPolicy="no-referrer"
+            className="w-14 h-20 rounded-xl object-cover shadow-lg border border-white/10 shrink-0"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span>{item.category}</span>
+              {item.year && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono-tabular">{item.year}</span>
+                </>
+              )}
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular">{formatHumanDuration(item.durationMs)}</span>
+              {item.isDownloaded && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Downloaded ({item.downloadQuality || '1080p HD'})
+                  </span>
+                </>
+              )}
+            </div>
+            <h2 className="text-lg sm:text-xl font-bold text-zinc-100 truncate mt-0.5">
+              {item.title}
+            </h2>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400 mt-1">
+              <span className="inline-flex items-center gap-1 font-semibold text-zinc-200">
+                {isSelfItem ? (
+                  <Lock className="w-3 h-3 text-emerald-400" />
+                ) : (
+                  <Users className="w-3 h-3 text-rose-400" />
                 )}
-                <span aria-hidden="true">·</span>
-                <span className="font-mono-tabular">{formatHumanDuration(item.durationMs)}</span>
-                {item.isDownloaded && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      Downloaded ({item.downloadQuality || '1080p HD'})
-                    </span>
-                  </>
-                )}
-              </div>
-              <h2 className="text-xl sm:text-2xl font-bold text-zinc-100 truncate mt-1">
-                {item.title}
-              </h2>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400 mt-1">
-                <span className="inline-flex items-center gap-1 font-semibold text-zinc-200">
-                  {isSelfItem ? (
-                    <Lock className="w-3 h-3 text-emerald-400" />
-                  ) : (
-                    <Users className="w-3 h-3 text-rose-400" />
-                  )}
-                  {isSelfItem ? 'My Self Library' : `${itemTeamName} Library`}
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>Added by {item.addedByName}</span>
-                <span aria-hidden="true">·</span>
-                <span>Source: {item.sourceType.replace('_', ' ')}</span>
-                {item.fileSizeBytes && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono-tabular">{formatFileSize(item.fileSizeBytes)}</span>
-                  </>
-                )}
-              </div>
+                {isSelfItem ? 'My Self Library' : `${itemTeamName} Library`}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>Added by {item.addedByName}</span>
+              <span aria-hidden="true">·</span>
+              <span>Source: {item.sourceType.replace('_', ' ')}</span>
+              {item.fileSizeBytes && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono-tabular">{formatFileSize(item.fileSizeBytes)}</span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -137,6 +190,62 @@ export const VideoDetailModal: React.FC = () => {
           <p className="text-sm text-zinc-300 leading-relaxed">
             {item.description || 'Ready for private playback or a synchronized Team Movie Hall.'}
           </p>
+
+          {/* Movie Folder Assignment */}
+          <div className="p-3.5 rounded-xl bg-zinc-900/70 border border-zinc-800 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                <Folder className="w-3.5 h-3.5 text-amber-400" />
+                <span>Movie Folder:</span>
+                <span className="text-amber-300">
+                  {item.folderName || 'Uncategorized (No Folder)'}
+                </span>
+              </span>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <select
+                value={item.folderName || ''}
+                onChange={(e) => {
+                  void moveLibraryItemToFolder(item.id, e.target.value || undefined);
+                }}
+                className="flex-1 min-h-[38px] px-3 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-semibold text-amber-200 focus:outline-none focus:border-amber-500"
+              >
+                <option value="">Uncategorized (No Folder)</option>
+                {availableFolders.map((folder) => (
+                  <option key={folder} value={folder}>
+                    📁 {folder}
+                  </option>
+                ))}
+              </select>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newFolderName.trim()) return;
+                  void moveLibraryItemToFolder(item.id, newFolderName.trim());
+                  setNewFolderName('');
+                }}
+                className="flex items-center gap-1.5 flex-1"
+              >
+                <input
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="Move to new folder..."
+                  maxLength={60}
+                  className="flex-1 min-h-[38px] px-3 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-xs font-bold text-zinc-950 flex items-center gap-1 shrink-0 transition-colors"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span>Move</span>
+                </button>
+              </form>
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button

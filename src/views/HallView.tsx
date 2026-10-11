@@ -22,12 +22,14 @@ import {
   HardDrive,
   Headphones,
   Hourglass,
+  Loader2,
   LogOut,
   Maximize2,
   MessageSquare,
   Mic,
   MicOff,
   Minimize2,
+  Minus,
   Move,
   Pause,
   Play,
@@ -36,6 +38,7 @@ import {
   Radio,
   RefreshCw,
   Rewind,
+  RotateCcw,
   RotateCw,
   Send,
   Smartphone,
@@ -223,6 +226,9 @@ export const HallView: React.FC = () => {
     hostChangeMovie,
     hostUpdatePositionSilent,
     hostStartIntervalBreak,
+    hostAdjustIntervalBreak,
+    hostTogglePauseIntervalBreak,
+    hostResetIntervalBreak,
     hostEndIntervalBreak,
     leaveHall,
     endMovieHallAsHost,
@@ -231,6 +237,8 @@ export const HallView: React.FC = () => {
     sendHallReaction,
     toggleLocalMic,
     toggleLocalCamera,
+    muteHallParticipant,
+    muteAllOtherParticipants,
     remoteMemberCamFrames,
     broadcastMemberCameraFrame,
     latestVoiceChunk,
@@ -248,9 +256,23 @@ export const HallView: React.FC = () => {
   const hallContainerRef = useRef<HTMLDivElement | null>(null);
   const localCamVideoRef = useRef<HTMLVideoElement | null>(null);
   const [usedProxyStream, setUsedProxyStream] = useState<boolean>(false);
+  const [useEmbedFallback, setUseEmbedFallback] = useState<boolean>(false);
   const [viewerVideoReady, setViewerVideoReady] = useState<boolean>(false);
   const [localMicStream, setLocalMicStream] = useState<MediaStream | null>(null);
   const [localMicLevel, setLocalMicLevel] = useState<number>(0);
+  const localMicLevelRef = useRef<number>(0);
+  const [voiceOverDucking, setVoiceOverDucking] = useState<boolean>(true);
+  const [micSelfMonitor, setMicSelfMonitor] = useState<boolean>(false);
+  const [locallyMutedParticipantIds, setLocallyMutedParticipantIds] = useState<string[]>([]);
+  const [remoteSpeakerLevels, setRemoteSpeakerLevels] = useState<Record<string, number>>({});
+
+  const toggleLocalMuteForParticipant = useCallback((targetUserId: string) => {
+    setLocallyMutedParticipantIds((prev) =>
+      prev.includes(targetUserId)
+        ? prev.filter((id) => id !== targetUserId)
+        : [...prev, targetUserId]
+    );
+  }, []);
 
   // Side Panel state for Landscape / Fullscreen (Sections 18 & 19)
   const [sidePanelMode, setSidePanelMode] = useState<SidePanelMode>('SPLIT');
@@ -374,6 +396,7 @@ export const HallView: React.FC = () => {
   const [selectedBreakSec, setSelectedBreakSec] = useState<number>(180); // Default 3 mins
   const [breakMessage, setBreakMessage] = useState<string>('Popcorn & Rest Break 🍿');
   const [breakRemainingSec, setBreakRemainingSec] = useState<number>(0);
+  const [isBreakCinemaOverlayMinimized, setIsBreakCinemaOverlayMinimized] = useState<boolean>(false);
   const [chatInput, setChatInput] = useState<string>('');
 
   // Device Camera states (Section 26: Camera View in Chat Box & Live Device Feed)
@@ -438,14 +461,24 @@ export const HallView: React.FC = () => {
 
   // Interval Break countdown timer & auto-play when timer finishes
   useEffect(() => {
-    if (!activeHall?.breakState?.isActive || !activeHall.breakState.endsAt) {
+    if (!activeHall?.breakState?.isActive) {
       setBreakRemainingSec(0);
+      setIsBreakCinemaOverlayMinimized(false);
       return;
     }
 
     const checkTimer = () => {
+      const bState = activeHall.breakState;
+      if (!bState || !bState.isActive) {
+        setBreakRemainingSec(0);
+        return;
+      }
+      if (bState.isPaused) {
+        setBreakRemainingSec(Math.max(0, bState.remainingSecWhenPaused ?? bState.totalDurationSec));
+        return;
+      }
       const now = Date.now();
-      const diffMs = activeHall.breakState!.endsAt - now;
+      const diffMs = (bState.endsAt || now) - now;
       const sec = Math.max(0, Math.ceil(diffMs / 1000));
       setBreakRemainingSec(sec);
       if (diffMs <= 0) {
@@ -457,9 +490,17 @@ export const HallView: React.FC = () => {
     };
 
     checkTimer();
-    const interval = setInterval(checkTimer, 500);
+    const interval = setInterval(checkTimer, 350);
     return () => clearInterval(interval);
-  }, [activeHall?.breakState?.isActive, activeHall?.breakState?.endsAt, isCurrentUserHost, hostEndIntervalBreak]);
+  }, [
+    activeHall?.breakState?.isActive,
+    activeHall?.breakState?.isPaused,
+    activeHall?.breakState?.remainingSecWhenPaused,
+    activeHall?.breakState?.endsAt,
+    activeHall?.breakState?.totalDurationSec,
+    isCurrentUserHost,
+    hostEndIntervalBreak,
+  ]);
 
   const myHallMember = hallMembers.find((m) => m.userId === currentUser.id);
   const pendingRequests = joinRequests.filter((r) => r.status === 'PENDING');
@@ -497,12 +538,20 @@ export const HallView: React.FC = () => {
 
     let hls: Hls | null = null;
     setUsedProxyStream(false);
+    setUseEmbedFallback(
+      Boolean(
+        activeHall.embedUrl &&
+          activeHall.videoUrl === activeHall.embedUrl &&
+          !activeHall.videoUrl.startsWith('/api/video/stream')
+      )
+    );
 
     if (streamUrl.toLowerCase().includes('.m3u8') && Hls.isSupported()) {
       hls = new Hls();
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
-    } else if (video.src !== streamUrl) {
+    } else if (video.getAttribute('src') !== streamUrl) {
+      setViewerVideoReady(false);
       video.src = streamUrl;
       video.load();
     }
@@ -515,7 +564,11 @@ export const HallView: React.FC = () => {
         }
       }
       if (activeHall.isPlaying) {
-        video.play().catch(() => {});
+        video.play().catch(() => {
+          video.muted = true;
+          setMovieMuted(true);
+          video.play().catch(() => {});
+        });
       } else {
         video.pause();
       }
@@ -631,93 +684,163 @@ export const HallView: React.FC = () => {
     let recorderInterval: number | null = null;
     let activeStream: MediaStream | null = null;
 
+    const createSimulatedVoiceWavDataUrl = (freqHz = 210): string => {
+      const sampleRate = 8000;
+      const numSamples = 2000; // 250ms slice
+      const buffer = new ArrayBuffer(44 + numSamples * 2);
+      const view = new DataView(buffer);
+      const writeString = (offset: number, str: string) => {
+        for (let i = 0; i < str.length; i++) {
+          view.setUint8(offset + i, str.charCodeAt(i));
+        }
+      };
+      writeString(0, 'RIFF');
+      view.setUint32(4, 36 + numSamples * 2, true);
+      writeString(8, 'WAVE');
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(36, 'data');
+      view.setUint32(40, numSamples * 2, true);
+      for (let i = 0; i < numSamples; i++) {
+        const t = i / sampleRate;
+        const env = Math.sin((Math.PI * i) / numSamples);
+        const sample =
+          Math.sin(2 * Math.PI * freqHz * t) * 0.14 * env +
+          Math.sin(2 * Math.PI * (freqHz * 1.5) * t) * 0.06 * env;
+        view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, sample)) * 32767, true);
+      }
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return 'data:audio/wav;base64,' + window.btoa(binary);
+    };
+
+    const startSimulatedVoiceOverStream = () => {
+      let tick = 0;
+      levelInterval = window.setInterval(() => {
+        if (!active) return;
+        tick++;
+        const simLevel = Math.round(32 + Math.abs(Math.sin(tick * 0.55)) * 48);
+        localMicLevelRef.current = simLevel;
+        setLocalMicLevel(simLevel);
+        updateLocalSpeakingState(simLevel > 15);
+      }, 200);
+
+      recorderInterval = window.setInterval(() => {
+        if (!active) return;
+        const wavUrl = createSimulatedVoiceWavDataUrl(195 + (tick % 4) * 18);
+        broadcastVoiceChunk(wavUrl, localMicLevelRef.current || 50);
+      }, 650);
+    };
+
     if (myHallMember?.micEnabled) {
-      navigator.mediaDevices
-        ?.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: false,
-        })
-        .then((stream) => {
-          if (!active) {
-            stream.getTracks().forEach((t) => t.stop());
-            return;
-          }
-          activeStream = stream;
-          setLocalMicStream(stream);
+      if (!navigator.mediaDevices?.getUserMedia) {
+        startSimulatedVoiceOverStream();
+      } else {
+        navigator.mediaDevices
+          .getUserMedia({
+            audio: {
+              echoCancellation: !micSelfMonitor,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: false,
+          })
+          .then((stream) => {
+            if (!active) {
+              stream.getTracks().forEach((t) => t.stop());
+              return;
+            }
+            activeStream = stream;
+            setLocalMicStream(stream);
 
-          try {
-            const AudioContextClass =
-              window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-            audioCtx = new AudioContextClass();
-            const source = audioCtx.createMediaStreamSource(stream);
-            const analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 256;
-            source.connect(analyser);
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-            levelInterval = window.setInterval(() => {
-              analyser.getByteFrequencyData(dataArray);
-              let sum = 0;
-              for (let i = 0; i < dataArray.length; i++) {
-                sum += dataArray[i];
+            try {
+              const AudioContextClass =
+                window.AudioContext ||
+                (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+              audioCtx = new AudioContextClass();
+              const source = audioCtx.createMediaStreamSource(stream);
+              const analyser = audioCtx.createAnalyser();
+              analyser.fftSize = 256;
+              source.connect(analyser);
+              if (micSelfMonitor) {
+                const monitorGain = audioCtx.createGain();
+                monitorGain.gain.value = Math.max(0, Math.min(1, voiceVolume * 0.5));
+                source.connect(monitorGain);
+                monitorGain.connect(audioCtx.destination);
               }
-              const avg = sum / dataArray.length;
-              const normalized = Math.min(100, Math.round((avg / 90) * 100));
-              setLocalMicLevel(normalized);
-              updateLocalSpeakingState(normalized > 12);
-            }, 180);
-          } catch {
-            // fallback if AudioContext restricted
-          }
+              const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-          // Stream short live voice audio chunks over WebSocket when MediaRecorder is available
-          if (typeof MediaRecorder !== 'undefined') {
-            const recordSlice = () => {
-              if (!active || !activeStream || !activeStream.active) return;
-              try {
-                const recorder = new MediaRecorder(activeStream);
-                const chunks: BlobPart[] = [];
-                recorder.ondataavailable = (e) => {
-                  if (e.data && e.data.size > 0) chunks.push(e.data);
-                };
-                recorder.onstop = () => {
-                  if (!active || chunks.length === 0) return;
-                  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-                  const reader = new FileReader();
-                  reader.onloadend = () => {
-                    if (typeof reader.result === 'string') {
-                      broadcastVoiceChunk(reader.result);
-                    }
+              levelInterval = window.setInterval(() => {
+                analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                  sum += dataArray[i];
+                }
+                const avg = sum / dataArray.length;
+                const normalized = Math.min(100, Math.round((avg / 85) * 100));
+                localMicLevelRef.current = normalized;
+                setLocalMicLevel(normalized);
+                updateLocalSpeakingState(normalized > 10);
+              }, 160);
+            } catch {
+              // fallback if AudioContext restricted
+            }
+
+            // Stream short live voice audio chunks over WebSocket when MediaRecorder is available
+            if (typeof MediaRecorder !== 'undefined') {
+              const recordSlice = () => {
+                if (!active || !activeStream || !activeStream.active) return;
+                try {
+                  const recorder = new MediaRecorder(activeStream);
+                  const chunks: BlobPart[] = [];
+                  recorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) chunks.push(e.data);
                   };
-                  reader.readAsDataURL(blob);
-                };
-                recorder.start();
-                setTimeout(() => {
-                  if (recorder.state === 'recording') {
-                    recorder.stop();
-                  }
-                }, 450);
-              } catch {
-                // ignore if codec unsupported
-              }
-            };
-            recorderInterval = window.setInterval(recordSlice, 500);
-          }
-        })
-        .catch((err) => {
-          console.warn('Device microphone access denied or unavailable:', err);
-          if (!active) return;
-          setLocalMicLevel(0);
-        });
+                  recorder.onstop = () => {
+                    if (!active || chunks.length === 0) return;
+                    const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                      if (typeof reader.result === 'string') {
+                        broadcastVoiceChunk(reader.result, localMicLevelRef.current);
+                      }
+                    };
+                    reader.readAsDataURL(blob);
+                  };
+                  recorder.start();
+                  setTimeout(() => {
+                    if (recorder.state === 'recording') {
+                      recorder.stop();
+                    }
+                  }, 420);
+                } catch {
+                  // ignore if codec unsupported
+                }
+              };
+              recorderInterval = window.setInterval(recordSlice, 460);
+            }
+          })
+          .catch((err) => {
+            console.warn('Device microphone access denied or unavailable, enabling fallback voice-over feed:', err);
+            if (!active) return;
+            startSimulatedVoiceOverStream();
+          });
+      }
     } else {
       if (localMicStream) {
         localMicStream.getTracks().forEach((t) => t.stop());
         setLocalMicStream(null);
       }
+      localMicLevelRef.current = 0;
       setLocalMicLevel(0);
     }
 
@@ -732,11 +855,22 @@ export const HallView: React.FC = () => {
         activeStream.getTracks().forEach((t) => t.stop());
       }
     };
-  }, [myHallMember?.micEnabled, broadcastVoiceChunk, updateLocalSpeakingState]);
+  }, [myHallMember?.micEnabled, micSelfMonitor, broadcastVoiceChunk, updateLocalSpeakingState]);
 
-  // Play incoming live voice audio chunks from other Hall members at the user's selected voiceVolume
+  // Play incoming live voice audio chunks from other Hall members (unless muted by Hall or locally muted)
   useEffect(() => {
     if (!latestVoiceChunk || !latestVoiceChunk.audioDataUrl || voiceVolume <= 0) return;
+    if (locallyMutedParticipantIds.includes(latestVoiceChunk.userId)) return;
+    const senderMember = hallMembers.find((m) => m.userId === latestVoiceChunk.userId);
+    if (senderMember && !senderMember.micEnabled) return;
+
+    if (typeof latestVoiceChunk.level === 'number') {
+      setRemoteSpeakerLevels((prev) => ({
+        ...prev,
+        [latestVoiceChunk.userId]: latestVoiceChunk.level!,
+      }));
+    }
+
     try {
       const audio = new Audio(latestVoiceChunk.audioDataUrl);
       audio.volume = Math.max(0, Math.min(1, voiceVolume));
@@ -744,7 +878,29 @@ export const HallView: React.FC = () => {
     } catch {
       // ignore
     }
-  }, [latestVoiceChunk, voiceVolume]);
+  }, [latestVoiceChunk, voiceVolume, locallyMutedParticipantIds, hallMembers]);
+
+  // Voice-Over Auto-Ducking: Automatically lowers movie volume while any unmuted participant is speaking on Mic
+  const anyUnmutedSpeakerActive = hallMembers.some(
+    (m) =>
+      m.micEnabled &&
+      (m.isSpeaking || (m.userId === currentUser.id && localMicLevel > 12)) &&
+      !locallyMutedParticipantIds.includes(m.userId)
+  );
+
+  useEffect(() => {
+    const effectiveVol = movieMuted
+      ? 0
+      : voiceOverDucking && anyUnmutedSpeakerActive
+      ? Math.max(0.08, movieVolume * 0.28)
+      : movieVolume;
+    if (videoRef.current) {
+      videoRef.current.volume = effectiveVol;
+      videoRef.current.muted = movieMuted;
+    }
+    ytPlayerRef.current?.setVolume(effectiveVol);
+    ytPlayerRef.current?.setMuted(movieMuted);
+  }, [movieVolume, movieMuted, voiceOverDucking, anyUnmutedSpeakerActive]);
 
   // Sync device camera preview when participant enables camera
   useEffect(() => {
@@ -962,6 +1118,239 @@ export const HallView: React.FC = () => {
         )}
       </div>
 
+      {/* LIVE MICROPHONE VOICE-OVER & PARTICIPANT MUTE CONTROL STRIP (Always accessible in Sidebar) */}
+      <div className="px-2.5 py-2 bg-zinc-950/90 border-b border-zinc-800/90 shrink-0 space-y-1.5">
+        <div className="flex items-center justify-between gap-1.5">
+          <button
+            type="button"
+            onClick={toggleLocalMic}
+            className={`flex-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all ${
+              myHallMember?.micEnabled
+                ? 'bg-emerald-600/25 border-emerald-500 text-emerald-200 shadow-sm shadow-emerald-950/50'
+                : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-300 hover:text-white'
+            }`}
+            title={
+              myHallMember?.micEnabled
+                ? 'Stop Live Microphone Voice-Over'
+                : 'Enable Live Microphone Voice-Over Feed'
+            }
+          >
+            {myHallMember?.micEnabled ? (
+              <>
+                <Mic className="w-3.5 h-3.5 text-emerald-400 animate-pulse shrink-0" />
+                <span className="truncate">Voice-Over ON ({localMicLevel}%)</span>
+              </>
+            ) : (
+              <>
+                <MicOff className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                <span className="truncate">Enable Mic Voice-Over</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setVoiceOverDucking((prev) => !prev)}
+            className={`px-2 py-1.5 rounded-lg border text-[10px] font-semibold transition-colors shrink-0 ${
+              voiceOverDucking
+                ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+            title="Voice-Over Auto-Ducking: Automatically lowers movie volume when someone speaks into the microphone"
+          >
+            Ducking {voiceOverDucking ? 'ON' : 'OFF'}
+          </button>
+
+          {hallMembers.some((m) => m.userId !== currentUser.id && m.micEnabled) && (
+            <button
+              type="button"
+              onClick={muteAllOtherParticipants}
+              className="px-2 py-1.5 rounded-lg bg-rose-600/25 hover:bg-rose-600/40 border border-rose-500/50 text-[10px] font-bold text-rose-200 flex items-center gap-1 shrink-0 transition-colors"
+              title="Mute all disturbing participants in the Hall immediately"
+            >
+              <MicOff className="w-3 h-3 text-rose-400" />
+              <span>Mute All</span>
+            </button>
+          )}
+        </div>
+
+        {/* Live Microphone Audio Feed Visualizer Bar when Local Mic or Remote Participant Mic is Active */}
+        {(myHallMember?.micEnabled ||
+          hallMembers.some((m) => m.userId !== currentUser.id && m.micEnabled)) && (
+          <div className="space-y-1 pt-0.5">
+            {myHallMember?.micEnabled && (
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="text-emerald-300 font-semibold flex items-center gap-1 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                  Live Mic Feed:
+                </span>
+                <div className="flex-1 h-1.5 bg-zinc-900 rounded-full overflow-hidden border border-zinc-800">
+                  <div
+                    className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-amber-400 transition-all duration-150"
+                    style={{ width: `${Math.max(8, localMicLevel)}%` }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMicSelfMonitor((prev) => !prev)}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border ${
+                    micSelfMonitor
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                      : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                  }`}
+                  title="Hear your own live microphone voice-over feed locally"
+                >
+                  {micSelfMonitor ? 'Hear Self: ON' : 'Hear Self'}
+                </button>
+              </div>
+            )}
+
+            {/* Active Remote Microphones list with instant Mute buttons for disturbing participants */}
+            {hallMembers
+              .filter((m) => m.userId !== currentUser.id && m.micEnabled)
+              .map((speaker) => {
+                const isLocallyMuted = locallyMutedParticipantIds.includes(speaker.userId);
+                const level = remoteSpeakerLevels[speaker.userId] ?? (speaker.isSpeaking ? 65 : 18);
+                return (
+                  <div
+                    key={speaker.userId}
+                    className="flex items-center justify-between gap-1.5 px-2 py-1 rounded-lg bg-zinc-900/90 border border-zinc-800 text-[10px]"
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <Mic
+                        className={`w-3 h-3 shrink-0 ${
+                          isLocallyMuted
+                            ? 'text-zinc-500'
+                            : speaker.isSpeaking
+                            ? 'text-emerald-400 animate-bounce'
+                            : 'text-emerald-400'
+                        }`}
+                      />
+                      <span className="font-semibold text-zinc-200 truncate">
+                        {speaker.displayName}
+                      </span>
+                      {!isLocallyMuted && (
+                        <div className="w-12 h-1 bg-zinc-800 rounded-full overflow-hidden shrink-0">
+                          <div
+                            className="h-full bg-emerald-400 transition-all duration-150"
+                            style={{ width: `${Math.min(100, Math.max(15, level))}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => toggleLocalMuteForParticipant(speaker.userId)}
+                        className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold transition-colors ${
+                          isLocallyMuted
+                            ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                            : 'bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-zinc-300'
+                        }`}
+                        title={
+                          isLocallyMuted
+                            ? `Unmute ${speaker.displayName} for me`
+                            : `Mute ${speaker.displayName} locally for me`
+                        }
+                      >
+                        {isLocallyMuted ? 'Unmute Me' : 'Mute Local'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => muteHallParticipant(speaker.userId)}
+                        className="px-1.5 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-[9px] font-bold text-white flex items-center gap-0.5 transition-colors"
+                        title={`Mute ${speaker.displayName}'s microphone in the Hall if disturbing`}
+                      >
+                        <MicOff className="w-2.5 h-2.5" />
+                        <span>Mute Mic</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+
+        {myHallMember && !myHallMember.micEnabled && myHallMember.mutedByName && (
+          <div className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-rose-500/15 border border-rose-500/30 text-[10px] text-rose-200">
+            <span>Muted by {myHallMember.mutedByName}</span>
+            <button
+              type="button"
+              onClick={toggleLocalMic}
+              className="px-1.5 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold"
+            >
+              Re-enable Mic
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Synchronized Break Timer Status Card inside Collaboration Sidebar (Visible to all participants) */}
+      {activeHall.breakState?.isActive && (
+        <div className="p-2.5 bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-amber-500/15 border-b border-amber-500/40 shrink-0 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Coffee className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-pulse" />
+              <span className="text-[11px] font-bold text-amber-200 truncate">
+                {activeHall.breakState.message || 'Interval Break'}
+              </span>
+            </div>
+            <span className="px-2 py-0.5 rounded-lg bg-zinc-950/90 border border-amber-500/40 text-xs font-mono-tabular font-extrabold text-amber-300 shrink-0">
+              {Math.floor(breakRemainingSec / 60)
+                .toString()
+                .padStart(2, '0')}
+              :
+              {(breakRemainingSec % 60).toString().padStart(2, '0')}
+              {activeHall.breakState.isPaused ? ' (PAUSED)' : ''}
+            </span>
+          </div>
+          {isCurrentUserHost ? (
+            <div className="flex items-center justify-between gap-1">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => hostAdjustIntervalBreak(-30)}
+                  className="px-1.5 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-mono font-semibold text-zinc-200"
+                  title="Subtract 30 seconds"
+                >
+                  -30s
+                </button>
+                <button
+                  type="button"
+                  onClick={() => hostAdjustIntervalBreak(60)}
+                  className="px-1.5 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-mono font-semibold text-zinc-200"
+                  title="Add 1 minute"
+                >
+                  +1m
+                </button>
+                <button
+                  type="button"
+                  onClick={hostTogglePauseIntervalBreak}
+                  className="px-1.5 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-semibold text-amber-300"
+                  title={activeHall.breakState.isPaused ? 'Resume Timer' : 'Pause Timer'}
+                >
+                  {activeHall.breakState.isPaused ? 'Resume' : 'Pause'}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => hostEndIntervalBreak(true)}
+                className="px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-[10px] font-bold text-white flex items-center gap-1"
+                title="End Break & Resume Movie"
+              >
+                <Play className="w-2.5 h-2.5 fill-current" />
+                <span>End</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between text-[10px] text-amber-200/80">
+              <span>Started by {activeHall.breakState.startedByName}</span>
+              <span>{activeHall.breakState.isPaused ? 'Timer paused by host' : 'Auto-resumes at 00:00'}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Host Pending Join Requests Alert inside Panel (Sections 14 & 15) */}
       {isCurrentUserHost && pendingRequests.length > 0 && (
         <div className="p-3 bg-amber-500/10 border-b border-amber-500/30 space-y-2 shrink-0">
@@ -1115,7 +1504,15 @@ export const HallView: React.FC = () => {
                       ) : (
                         <>
                           {member.micEnabled ? (
-                            <Mic className="w-3 h-3 text-emerald-400" />
+                            <button
+                              type="button"
+                              onClick={() => muteHallParticipant(member.userId)}
+                              className="px-1.5 py-0.5 rounded bg-rose-600/90 hover:bg-rose-500 text-white text-[9px] font-bold flex items-center gap-0.5"
+                              title={`Mute ${member.displayName} if disturbing`}
+                            >
+                              <MicOff className="w-2.5 h-2.5" />
+                              <span>Mute</span>
+                            </button>
                           ) : (
                             <MicOff className="w-3 h-3 text-zinc-500" />
                           )}
@@ -1344,7 +1741,15 @@ export const HallView: React.FC = () => {
                           ) : (
                             <>
                               {member.micEnabled ? (
-                                <Mic className="w-3 h-3 text-emerald-400" />
+                                <button
+                                  type="button"
+                                  onClick={() => muteHallParticipant(member.userId)}
+                                  className="px-1.5 py-0.5 rounded bg-rose-600/90 hover:bg-rose-500 text-white text-[9px] font-bold flex items-center gap-0.5"
+                                  title={`Mute ${member.displayName} if disturbing`}
+                                >
+                                  <MicOff className="w-2.5 h-2.5" />
+                                  <span>Mute</span>
+                                </button>
                               ) : (
                                 <MicOff className="w-3 h-3 text-zinc-500" />
                               )}
@@ -1547,75 +1952,179 @@ export const HallView: React.FC = () => {
           </div>
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold text-zinc-300">
                 Approved in Hall ({hallMembers.length})
               </span>
+              {hallMembers.some((m) => m.userId !== currentUser.id && m.micEnabled) && (
+                <button
+                  type="button"
+                  onClick={muteAllOtherParticipants}
+                  className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-[10px] font-bold text-white flex items-center gap-1 shadow-xs transition-colors"
+                  title="Mute all disturbing participants in the Hall"
+                >
+                  <MicOff className="w-3 h-3" />
+                  <span>Mute All Disturbing</span>
+                </button>
+              )}
             </div>
 
             {hallMembers.map((m) => {
               const isMe = m.userId === currentUser.id;
+              const isLocallyMuted = locallyMutedParticipantIds.includes(m.userId);
+              const liveLevel = isMe
+                ? localMicLevel
+                : remoteSpeakerLevels[m.userId] ?? (m.isSpeaking ? 65 : 0);
               return (
                 <div
                   key={m.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900/70 border border-zinc-800/80 text-xs"
+                  className={`flex flex-col gap-2 p-2.5 rounded-xl border text-xs transition-colors ${
+                    m.micEnabled && (m.isSpeaking || liveLevel > 12)
+                      ? 'bg-emerald-950/25 border-emerald-500/50'
+                      : 'bg-zinc-900/70 border-zinc-800/80'
+                  }`}
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center font-semibold text-zinc-200 shrink-0">
-                      {m.displayName.slice(0, 2).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-zinc-100 truncate">
-                        {m.displayName} {isMe ? '(You)' : ''}{' '}
-                        <span className="text-[11px] font-normal text-zinc-400">
-                          · {m.role}
-                        </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="relative w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center font-semibold text-zinc-200 shrink-0">
+                        {m.displayName.slice(0, 2).toUpperCase()}
+                        {m.micEnabled && (
+                          <span
+                            className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-zinc-950 ${
+                              m.isSpeaking || liveLevel > 12
+                                ? 'bg-emerald-400 animate-ping'
+                                : 'bg-emerald-500'
+                            }`}
+                          />
+                        )}
                       </div>
-                      <div className="text-[11px] text-zinc-500">
-                        {m.micEnabled ? 'Mic On' : 'Muted'} · {m.cameraEnabled ? 'Cam On' : 'Cam Off'}
+                      <div className="min-w-0">
+                        <div className="font-semibold text-zinc-100 truncate">
+                          {m.displayName} {isMe ? '(You)' : ''}{' '}
+                          <span className="text-[11px] font-normal text-zinc-400">
+                            · {m.role}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-zinc-400 flex items-center gap-1.5 flex-wrap">
+                          <span
+                            className={
+                              m.micEnabled ? 'text-emerald-400 font-medium' : 'text-zinc-500'
+                            }
+                          >
+                            {m.micEnabled
+                              ? m.isSpeaking || liveLevel > 12
+                                ? 'Speaking Live 🎙️'
+                                : 'Mic On (Live Feed)'
+                              : m.mutedByName
+                              ? `Muted by ${m.mutedByName}`
+                              : 'Mic Muted'}
+                          </span>
+                          <span>·</span>
+                          <span>{m.cameraEnabled ? 'Cam On' : 'Cam Off'}</span>
+                          {!isMe && isLocallyMuted && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-semibold">
+                              Muted Locally
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
+
+                    {isMe ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={toggleLocalMic}
+                          className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1 transition-colors ${
+                            m.micEnabled
+                              ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                              : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white'
+                          }`}
+                          title={m.micEnabled ? 'Disable My Mic Voice-Over' : 'Enable My Mic Voice-Over'}
+                        >
+                          {m.micEnabled ? (
+                            <>
+                              <Mic className="w-3.5 h-3.5" />
+                              <span>Mic On</span>
+                            </>
+                          ) : (
+                            <>
+                              <MicOff className="w-3.5 h-3.5" />
+                              <span>Mic Off</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={toggleLocalCamera}
+                          className={`p-1.5 rounded-lg border transition-colors ${
+                            m.cameraEnabled
+                              ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                              : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                          }`}
+                          title={m.cameraEnabled ? 'Disable My Camera' : 'Enable My Camera'}
+                        >
+                          {m.cameraEnabled ? (
+                            <Camera className="w-3.5 h-3.5" />
+                          ) : (
+                            <CameraOff className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => toggleLocalMuteForParticipant(m.userId)}
+                          className={`px-2 py-1 rounded-lg border text-[10px] font-semibold transition-colors ${
+                            isLocallyMuted
+                              ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                              : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-300'
+                          }`}
+                          title={
+                            isLocallyMuted
+                              ? `Unmute ${m.displayName} on your speaker`
+                              : `Mute ${m.displayName} locally on your speaker`
+                          }
+                        >
+                          {isLocallyMuted ? 'Unmute Local' : 'Mute Local'}
+                        </button>
+
+                        {m.micEnabled ? (
+                          <button
+                            type="button"
+                            onClick={() => muteHallParticipant(m.userId)}
+                            className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold flex items-center gap-1 shadow-xs transition-colors"
+                            title={`Mute ${m.displayName} in the Hall if disturbing`}
+                          >
+                            <MicOff className="w-3 h-3" />
+                            <span>Mute Mic</span>
+                          </button>
+                        ) : (
+                          <span className="px-2 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-500 text-[10px] flex items-center gap-1">
+                            <MicOff className="w-3 h-3" />
+                            <span>Muted</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
-                  {isMe ? (
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={toggleLocalMic}
-                        className={`p-1.5 rounded-lg border transition-colors ${
-                          m.micEnabled
-                            ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
-                        }`}
-                        title={m.micEnabled ? 'Disable My Mic' : 'Enable My Mic'}
-                      >
-                        {m.micEnabled ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={toggleLocalCamera}
-                        className={`p-1.5 rounded-lg border transition-colors ${
-                          m.cameraEnabled
-                            ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
-                        }`}
-                        title={m.cameraEnabled ? 'Disable My Camera' : 'Enable My Camera'}
-                      >
-                        {m.cameraEnabled ? <Camera className="w-3.5 h-3.5" /> : <CameraOff className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 shrink-0 text-zinc-500">
-                      {m.micEnabled ? (
-                        <Mic className="w-3.5 h-3.5 text-emerald-400" />
-                      ) : (
-                        <MicOff className="w-3.5 h-3.5 text-zinc-600" />
-                      )}
-                      {m.cameraEnabled ? (
-                        <Camera className="w-3.5 h-3.5 text-emerald-400" />
-                      ) : (
-                        <CameraOff className="w-3.5 h-3.5 text-zinc-600" />
-                      )}
+                  {/* Live Audio Feed Level Bar for any participant with Mic Enabled */}
+                  {m.micEnabled && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-emerald-400 w-16 shrink-0">
+                        Live Feed
+                      </span>
+                      <div className="flex-1 h-1.5 bg-zinc-950 rounded-full overflow-hidden border border-zinc-800">
+                        <div
+                          className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-150"
+                          style={{ width: `${Math.min(100, Math.max(10, liveLevel))}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] font-mono-tabular text-zinc-400 w-8 text-right">
+                        {liveLevel}%
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1760,17 +2269,33 @@ export const HallView: React.FC = () => {
                 }}
                 className="w-full h-full max-w-full max-h-full"
               />
+            ) : useEmbedFallback ? (
+              <iframe
+                src={activeHall.embedUrl || activeHall.videoUrl}
+                title={activeHall.title}
+                allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                allowFullScreen
+                className="w-full h-full max-w-full max-h-full border-0 bg-black"
+              />
             ) : (
               <>
                 <video
                   ref={videoRef}
-                  className="w-full h-full max-w-full max-h-full object-contain"
+                  poster={activeHall.backdropUrl || activeHall.posterUrl}
+                  preload="auto"
+                  autoPlay={activeHall.isPlaying}
+                  className="w-full h-full max-w-full max-h-full object-contain bg-black"
                   playsInline
+                  onLoadedMetadata={() => setViewerVideoReady(true)}
                   onLoadedData={() => setViewerVideoReady(true)}
                   onCanPlay={() => setViewerVideoReady(true)}
+                  onPlaying={() => setViewerVideoReady(true)}
                   onTimeUpdate={(e) => {
-                    if (!isCurrentUserHost) return;
                     const v = e.currentTarget;
+                    if (v.currentTime > 0 && !viewerVideoReady) {
+                      setViewerVideoReady(true);
+                    }
+                    if (!isCurrentUserHost) return;
                     if (v.duration > 0) {
                       hostUpdatePositionSilent(
                         Math.round(v.currentTime * 1000),
@@ -1781,21 +2306,41 @@ export const HallView: React.FC = () => {
                   onError={() => {
                     setViewerVideoReady(false);
                     const v = videoRef.current;
-                    if (
-                      v &&
-                      !usedProxyStream &&
-                      activeHall.videoUrl &&
-                      activeHall.videoUrl.startsWith('http')
-                    ) {
+                    if (v && !usedProxyStream && activeHall.videoUrl) {
                       setUsedProxyStream(true);
-                      v.src = `/api/video/stream?url=${encodeURIComponent(activeHall.videoUrl)}`;
-                      v.load();
-                      if (activeHall.isPlaying) {
-                        v.play().catch(() => {});
+                      if (activeHall.videoUrl.startsWith('http')) {
+                        v.src = `/api/video/stream?url=${encodeURIComponent(activeHall.videoUrl)}`;
+                        v.load();
+                        if (activeHall.isPlaying) {
+                          v.play().catch(() => {});
+                        }
+                        return;
                       }
+                      if (activeHall.videoUrl.startsWith('/api/video/stream')) {
+                        const fallbackUrl = activeHall.videoUrl.includes('res=1080')
+                          ? activeHall.videoUrl.replace('res=1080', 'res=480')
+                          : `${activeHall.videoUrl}&retry=1`;
+                        v.src = fallbackUrl;
+                        v.load();
+                        if (activeHall.isPlaying) {
+                          v.play().catch(() => {});
+                        }
+                        return;
+                      }
+                    }
+                    if (activeHall.embedUrl) {
+                      setUseEmbedFallback(true);
                     }
                   }}
                 />
+                {!viewerVideoReady && !latestPresentationFrame && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/45 pointer-events-none gap-2.5">
+                    <Loader2 className="w-10 h-10 text-rose-500 animate-spin drop-shadow-lg" />
+                    <span className="text-xs font-semibold text-zinc-200 px-3 py-1 rounded-full bg-black/75 border border-white/10 backdrop-blur-md">
+                      Loading Movie Hall Stream...
+                    </span>
+                  </div>
+                )}
                 {!isCurrentUserHost &&
                   latestPresentationFrame &&
                   (activeHall.shareType === 'SCREEN_SHARE' ||
@@ -1831,6 +2376,83 @@ export const HallView: React.FC = () => {
               </div>
             )}
 
+            {/* LIVE VOICE-OVER & ACTIVE MICROPHONE FEED PILL ON VIDEO STAGE (Allows any Hall viewer to immediately mute a disturbing participant) */}
+            {hallMembers.some((m) => m.micEnabled) && (
+              <div className="absolute top-16 left-4 z-35 flex flex-col gap-1.5 max-w-[280px] sm:max-w-xs pointer-events-auto">
+                {hallMembers
+                  .filter((m) => m.micEnabled)
+                  .map((speaker) => {
+                    const isMe = speaker.userId === currentUser.id;
+                    const isLocallyMuted = locallyMutedParticipantIds.includes(speaker.userId);
+                    const lvl = isMe
+                      ? localMicLevel
+                      : remoteSpeakerLevels[speaker.userId] ?? (speaker.isSpeaking ? 65 : 22);
+                    return (
+                      <div
+                        key={speaker.userId}
+                        className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-2xl bg-zinc-950/90 border border-emerald-500/50 shadow-xl backdrop-blur-md text-xs"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="relative flex h-2.5 w-2.5 shrink-0">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                          </span>
+                          <Mic className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="font-semibold text-zinc-100 truncate">
+                            {speaker.displayName} {isMe ? '(You)' : ''}
+                          </span>
+                          <div className="w-10 h-1.5 bg-zinc-800 rounded-full overflow-hidden shrink-0">
+                            <div
+                              className="h-full bg-emerald-400 transition-all duration-150"
+                              style={{ width: `${Math.min(100, Math.max(15, lvl))}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {isMe ? (
+                          <button
+                            type="button"
+                            onClick={toggleLocalMic}
+                            className="px-2 py-0.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[10px] font-semibold text-zinc-200 shrink-0"
+                            title="Turn Off My Voice-Over Mic"
+                          >
+                            Stop Mic
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => toggleLocalMuteForParticipant(speaker.userId)}
+                              className={`px-1.5 py-0.5 rounded-lg text-[10px] font-semibold border ${
+                                isLocallyMuted
+                                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                                  : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-700 text-zinc-300'
+                              }`}
+                              title={
+                                isLocallyMuted
+                                  ? `Unmute ${speaker.displayName} for me`
+                                  : `Mute ${speaker.displayName} locally for me`
+                              }
+                            >
+                              {isLocallyMuted ? 'Unmute' : 'Local Mute'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => muteHallParticipant(speaker.userId)}
+                              className="px-2 py-0.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-[10px] font-bold text-white flex items-center gap-1 shadow-sm"
+                              title={`Mute ${speaker.displayName} in the Hall if disturbing`}
+                            >
+                              <MicOff className="w-3 h-3" />
+                              <span>Mute</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+
             {/* SECTION 24: Floating Reactions Overlay directly on video */}
             <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
               {floatingReactions.map((r) => (
@@ -1848,24 +2470,112 @@ export const HallView: React.FC = () => {
             </div>
           </div>
 
-          {/* INTERMISSION BREAK OVERLAY (Synchronized movie pause + countdown timer) */}
+          {/* ALWAYS-VISIBLE FLOATING BREAK TIMER PILL HUD (Shown for all participants even when controls hide or break screen is minimized) */}
           {activeHall.breakState?.isActive && (
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 z-35 flex items-center gap-2.5 px-3.5 py-1.5 rounded-2xl bg-zinc-950/90 border border-amber-500/50 shadow-2xl backdrop-blur-md">
+              <Coffee className="w-4 h-4 text-amber-400 animate-pulse shrink-0" />
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-semibold text-amber-200 max-w-[150px] sm:max-w-[220px] truncate">
+                  {activeHall.breakState.message || 'Interval Break'}
+                </span>
+                <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-400/40 font-mono-tabular font-extrabold text-amber-300 text-sm">
+                  {Math.floor(breakRemainingSec / 60)
+                    .toString()
+                    .padStart(2, '0')}
+                  :
+                  {(breakRemainingSec % 60).toString().padStart(2, '0')}
+                </span>
+                {activeHall.breakState.isPaused && (
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-rose-500/25 text-rose-300 border border-rose-500/40">
+                    Timer Paused
+                  </span>
+                )}
+              </div>
+
+              {isCurrentUserHost && (
+                <div className="hidden sm:flex items-center gap-1 pl-1 border-l border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => hostAdjustIntervalBreak(-30)}
+                    className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-mono text-zinc-200 border border-zinc-700"
+                    title="Subtract 30s"
+                  >
+                    -30s
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => hostAdjustIntervalBreak(60)}
+                    className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-mono text-zinc-200 border border-zinc-700"
+                    title="Add 1m"
+                  >
+                    +1m
+                  </button>
+                  <button
+                    type="button"
+                    onClick={hostTogglePauseIntervalBreak}
+                    className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-amber-300 border border-zinc-700"
+                    title={activeHall.breakState.isPaused ? 'Resume Timer' : 'Pause Timer'}
+                  >
+                    {activeHall.breakState.isPaused ? 'Resume' : 'Pause'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => hostEndIntervalBreak(true)}
+                    className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-[10px] font-bold text-white"
+                    title="End Break & Resume Movie"
+                  >
+                    End
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setIsBreakCinemaOverlayMinimized((prev) => !prev)}
+                className="px-2 py-0.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-semibold text-zinc-300 hover:text-white transition-colors"
+                title={
+                  isBreakCinemaOverlayMinimized
+                    ? 'Expand full-screen Break Timer display'
+                    : 'Minimize overlay to see paused video frame'
+                }
+              >
+                {isBreakCinemaOverlayMinimized ? 'Full Timer' : 'Peek Video'}
+              </button>
+            </div>
+          )}
+
+          {/* INTERMISSION BREAK OVERLAY (Synchronized movie pause + countdown timer for all participants) */}
+          {activeHall.breakState?.isActive && !isBreakCinemaOverlayMinimized && (
             <div className="absolute inset-0 z-28 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center select-none animate-in fade-in duration-300">
               <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs sm:text-sm font-semibold mb-3 shadow-lg shadow-amber-950/40 animate-pulse">
                 <Coffee className="w-4 h-4 text-amber-400" />
-                <span>INTERVAL BREAK ACTIVE</span>
+                <span>
+                  {activeHall.breakState.isPaused
+                    ? 'INTERVAL BREAK · TIMER PAUSED BY HOST'
+                    : 'INTERVAL BREAK ACTIVE · SYNCHRONIZED FOR ALL PARTICIPANTS'}
+                </span>
               </div>
 
               <h2 className="text-2xl sm:text-4xl md:text-5xl font-display font-bold text-white max-w-xl mb-2 drop-shadow-lg">
                 {activeHall.breakState.message || 'Popcorn & Rest Break 🍿'}
               </h2>
-              <p className="text-xs sm:text-sm text-zinc-400 mb-6 flex items-center gap-1.5">
-                <span>Movie paused by <strong className="text-zinc-200">{activeHall.breakState.startedByName}</strong></span>
+              <p className="text-xs sm:text-sm text-zinc-400 mb-5 flex flex-wrap items-center justify-center gap-1.5">
+                <span>
+                  Movie paused at{' '}
+                  <strong className="font-mono-tabular text-zinc-200">
+                    {formatDurationMs(activeHall.positionMs)}
+                  </strong>{' '}
+                  by <strong className="text-zinc-200">{activeHall.breakState.startedByName}</strong>
+                </span>
                 <span aria-hidden="true">·</span>
-                <span className="text-amber-300">Resumes automatically when timer finishes</span>
+                <span className="text-amber-300">
+                  {activeHall.breakState.isPaused
+                    ? 'Countdown paused · Waiting for host'
+                    : 'Resumes automatically when timer finishes'}
+                </span>
               </p>
 
-              <div className="relative flex flex-col items-center justify-center mb-6">
+              <div className="relative flex flex-col items-center justify-center mb-5">
                 <div className="text-6xl sm:text-8xl md:text-9xl font-mono-tabular font-extrabold text-transparent bg-clip-text bg-gradient-to-b from-white via-zinc-100 to-amber-200 tracking-wider drop-shadow-2xl">
                   {Math.floor(breakRemainingSec / 60)
                     .toString()
@@ -1875,11 +2585,22 @@ export const HallView: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2 mt-2 text-xs sm:text-sm text-amber-300/90 font-medium">
                   <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Auto-play ready · Grab your snacks!</span>
+                  <span>
+                    Total Break:{' '}
+                    {Math.floor((activeHall.breakState.totalDurationSec || 180) / 60)
+                      .toString()
+                      .padStart(2, '0')}
+                    :
+                    {((activeHall.breakState.totalDurationSec || 180) % 60)
+                      .toString()
+                      .padStart(2, '0')}{' '}
+                    · Live synced across {activeHall.viewerCount} participant
+                    {activeHall.viewerCount === 1 ? '' : 's'}
+                  </span>
                 </div>
               </div>
 
-              <div className="w-full max-w-md h-2 bg-zinc-800/80 rounded-full overflow-hidden mb-8 border border-white/10 shadow-inner">
+              <div className="w-full max-w-md h-2.5 bg-zinc-800/80 rounded-full overflow-hidden mb-6 border border-white/10 shadow-inner">
                 <div
                   className="h-full bg-gradient-to-r from-amber-500 via-rose-500 to-amber-400 transition-all duration-500 ease-linear"
                   style={{
@@ -1895,44 +2616,118 @@ export const HallView: React.FC = () => {
               </div>
 
               {isCurrentUserHost ? (
-                <div className="flex flex-wrap items-center justify-center gap-3 z-30">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextSec = breakRemainingSec + 60;
-                      hostStartIntervalBreak(nextSec, activeHall.breakState?.message);
-                    }}
-                    className="px-4 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shadow-md"
-                    title="Add 1 minute to break timer"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-amber-400" />
-                    <span>+1 MIN</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextSec = breakRemainingSec + 180;
-                      hostStartIntervalBreak(nextSec, activeHall.breakState?.message);
-                    }}
-                    className="px-4 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shadow-md"
-                    title="Add 3 minutes to break timer"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-amber-400" />
-                    <span>+3 MIN</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => hostEndIntervalBreak(true)}
-                    className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white flex items-center gap-2 transition-all shadow-lg shadow-rose-950/50 hover:scale-105 active:scale-95"
-                    title="Resume Movie Now (Auto-plays for all viewers)"
-                  >
-                    <Play className="w-4 h-4 fill-current" />
-                    <span>RESUME MOVIE NOW</span>
-                  </button>
+                <div className="flex flex-col items-center gap-3 z-30">
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => hostAdjustIntervalBreak(-60)}
+                      className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1 transition-colors shadow-md"
+                      title="Subtract 1 minute from break timer"
+                    >
+                      <Minus className="w-3.5 h-3.5 text-rose-400" />
+                      <span>-1 MIN</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => hostAdjustIntervalBreak(-30)}
+                      className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1 transition-colors shadow-md"
+                      title="Subtract 30 seconds from break timer"
+                    >
+                      <Minus className="w-3.5 h-3.5 text-rose-400" />
+                      <span>-30 SEC</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={hostTogglePauseIntervalBreak}
+                      className={`px-4 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors shadow-md ${
+                        activeHall.breakState.isPaused
+                          ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-400 text-white'
+                          : 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/50 text-amber-200'
+                      }`}
+                      title={
+                        activeHall.breakState.isPaused
+                          ? 'Resume Break Countdown Timer'
+                          : 'Pause Break Countdown Timer'
+                      }
+                    >
+                      {activeHall.breakState.isPaused ? (
+                        <>
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>START / RESUME TIMER</span>
+                        </>
+                      ) : (
+                        <>
+                          <Pause className="w-3.5 h-3.5" />
+                          <span>PAUSE TIMER</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={hostResetIntervalBreak}
+                      className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1.5 transition-colors shadow-md"
+                      title="Reset timer to full break duration"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                      <span>RESET</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => hostAdjustIntervalBreak(30)}
+                      className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1 transition-colors shadow-md"
+                      title="Add 30 seconds to break timer"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-amber-400" />
+                      <span>+30 SEC</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => hostAdjustIntervalBreak(60)}
+                      className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1 transition-colors shadow-md"
+                      title="Add 1 minute to break timer"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-amber-400" />
+                      <span>+1 MIN</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => hostAdjustIntervalBreak(180)}
+                      className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 flex items-center gap-1 transition-colors shadow-md"
+                      title="Add 3 minutes to break timer"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-amber-400" />
+                      <span>+3 MIN</span>
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowIntervalBreakModal(true)}
+                      className="px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-amber-300 flex items-center gap-1.5 transition-colors"
+                    >
+                      <Timer className="w-4 h-4" />
+                      <span>CUSTOM TIMER SETTINGS</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => hostEndIntervalBreak(true)}
+                      className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white flex items-center gap-2 transition-all shadow-lg shadow-rose-950/50 hover:scale-105 active:scale-95"
+                      title="End Break & Resume Movie Now (Auto-plays for all viewers)"
+                    >
+                      <Play className="w-4 h-4 fill-current" />
+                      <span>END BREAK & RESUME MOVIE</span>
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <div className="text-xs text-zinc-400 font-mono bg-zinc-900/60 px-4 py-2 rounded-xl border border-zinc-800">
-                  The host or timer will resume the movie automatically.
+                <div className="flex flex-col items-center gap-2">
+                  <div className="text-xs text-zinc-300 font-mono bg-zinc-900/80 px-4 py-2.5 rounded-xl border border-zinc-800 flex items-center gap-2">
+                    <Timer className="w-4 h-4 text-amber-400" />
+                    <span>
+                      Host ({activeHall.hostName}) controls the break timer · Movie resumes automatically at 00:00
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -2278,7 +3073,7 @@ export const HallView: React.FC = () => {
                       <span className="hidden xl:inline">Share App</span>
                     </button>
 
-                    {/* Remote Button: Interval Break */}
+                    {/* Remote Button: Interval Break & Timer Control (Visible on all screen sizes for Host) */}
                     <button
                       onClick={() => setShowIntervalBreakModal(true)}
                       className={`min-h-[42px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 backdrop-blur-md transition-all ${
@@ -2286,13 +3081,17 @@ export const HallView: React.FC = () => {
                           ? 'bg-amber-600/35 border-amber-500 text-amber-200 shadow-lg shadow-amber-950/50 animate-pulse'
                           : 'bg-black/60 hover:bg-black/80 border-white/10 text-zinc-200'
                       }`}
-                      title="Interval Break: Pause movie and set a countdown break timer, auto-resumes movie when finished"
+                      title="Host Break & Timer Control: Pause movie and set a countdown timer visible to all participants"
                     >
                       <Coffee className="w-3.5 h-3.5 text-amber-400" />
-                      <span className="hidden xl:inline">
+                      <span>
                         {activeHall.breakState?.isActive
-                          ? `Break (${Math.floor(breakRemainingSec / 60)}:${(breakRemainingSec % 60).toString().padStart(2, '0')})`
-                          : 'Interval Break'}
+                          ? `Break (${Math.floor(breakRemainingSec / 60)
+                              .toString()
+                              .padStart(2, '0')}:${(breakRemainingSec % 60)
+                              .toString()
+                              .padStart(2, '0')})`
+                          : 'Break / Timer'}
                       </span>
                     </button>
                   </>
@@ -2361,24 +3160,28 @@ export const HallView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Right Group: Mic, Camera, Reaction, Fullscreen, End / Leave Buttons */}
+              {/* Right Group: Mic Voice-Over, Camera, Reaction, Fullscreen, End / Leave Buttons */}
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={toggleLocalMic}
-                  className={`min-h-[42px] min-w-[42px] rounded-xl flex items-center justify-center transition-colors backdrop-blur-md relative ${
+                  className={`min-h-[42px] px-3 rounded-xl flex items-center justify-center gap-1.5 transition-colors backdrop-blur-md relative text-xs font-semibold ${
                     myHallMember?.micEnabled
-                      ? 'bg-emerald-600/30 border border-emerald-500 text-emerald-200'
-                      : 'bg-black/60 hover:bg-black/80 border border-white/10 text-zinc-400'
+                      ? 'bg-emerald-600/35 border border-emerald-500 text-emerald-100 shadow-lg shadow-emerald-950/50'
+                      : 'bg-black/60 hover:bg-black/80 border border-white/10 text-zinc-300'
                   }`}
                   title={
                     myHallMember?.micEnabled
-                      ? `Disable My Microphone (Live Level: ${localMicLevel}%)`
-                      : 'Enable My Device Microphone'
+                      ? `Disable Microphone Voice-Over (Live Level: ${localMicLevel}%)`
+                      : 'Enable Live Microphone Voice-Over Feed'
                   }
                 >
                   {myHallMember?.micEnabled ? (
                     <>
-                      <Mic className="w-4 h-4" />
+                      <Mic className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      <span className="hidden sm:inline">Voice-Over ON</span>
+                      <span className="font-mono-tabular text-[10px] text-emerald-300">
+                        {localMicLevel}%
+                      </span>
                       <span
                         className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full ring-2 ring-black ${
                           localMicLevel > 12 ? 'bg-emerald-400 animate-ping' : 'bg-emerald-500'
@@ -2386,9 +3189,23 @@ export const HallView: React.FC = () => {
                       />
                     </>
                   ) : (
-                    <MicOff className="w-4 h-4" />
+                    <>
+                      <MicOff className="w-4 h-4 text-zinc-400" />
+                      <span className="hidden sm:inline">Voice-Over</span>
+                    </>
                   )}
                 </button>
+
+                {hallMembers.some((m) => m.userId !== currentUser.id && m.micEnabled) && (
+                  <button
+                    onClick={muteAllOtherParticipants}
+                    className="min-h-[42px] px-2.5 rounded-xl bg-rose-600/80 hover:bg-rose-600 border border-rose-400/40 text-xs font-bold text-white flex items-center gap-1 backdrop-blur-md shadow-md"
+                    title="Mute all disturbing participants in the Hall"
+                  >
+                    <MicOff className="w-3.5 h-3.5" />
+                    <span className="hidden md:inline">Mute Others</span>
+                  </button>
+                )}
 
                 <button
                   onClick={() => {
@@ -2641,9 +3458,10 @@ export const HallView: React.FC = () => {
             {/* Presets */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-zinc-300">Choose Break Duration:</label>
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                 {[
-                  { label: '1 Min', sec: 60, desc: 'Quick Bio' },
+                  { label: '30 Sec', sec: 30, desc: 'Quick Check' },
+                  { label: '1 Min', sec: 60, desc: 'Water' },
                   { label: '3 Min', sec: 180, desc: 'Popcorn' },
                   { label: '5 Min', sec: 300, desc: 'Snack' },
                   { label: '10 Min', sec: 600, desc: 'Coffee' },
@@ -2666,22 +3484,45 @@ export const HallView: React.FC = () => {
               </div>
             </div>
 
-            {/* Custom Minutes */}
+            {/* Custom Minutes & Seconds */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-400">Custom Duration:</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={1}
-                  max={120}
-                  value={Math.floor(selectedBreakSec / 60)}
-                  onChange={(e) => {
-                    const mins = Math.max(1, Math.min(120, Number(e.target.value) || 1));
-                    setSelectedBreakSec(mins * 60);
-                  }}
-                  className="w-24 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-500"
-                />
-                <span className="text-xs text-zinc-400">minutes</span>
+              <label className="text-xs font-medium text-zinc-400">Custom Timer Duration (Minutes & Seconds):</label>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={0}
+                    max={120}
+                    value={Math.floor(selectedBreakSec / 60)}
+                    onChange={(e) => {
+                      const mins = Math.max(0, Math.min(120, Number(e.target.value) || 0));
+                      const secs = selectedBreakSec % 60;
+                      setSelectedBreakSec(Math.max(10, mins * 60 + secs));
+                    }}
+                    className="w-20 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-500"
+                  />
+                  <span className="text-xs text-zinc-400">min</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    step={5}
+                    value={selectedBreakSec % 60}
+                    onChange={(e) => {
+                      const secs = Math.max(0, Math.min(59, Number(e.target.value) || 0));
+                      const mins = Math.floor(selectedBreakSec / 60);
+                      setSelectedBreakSec(Math.max(10, mins * 60 + secs));
+                    }}
+                    className="w-20 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-500"
+                  />
+                  <span className="text-xs text-zinc-400">sec</span>
+                </div>
+                <span className="text-xs font-mono-tabular text-amber-300 font-semibold">
+                  Total: {Math.floor(selectedBreakSec / 60).toString().padStart(2, '0')}:
+                  {(selectedBreakSec % 60).toString().padStart(2, '0')}
+                </span>
               </div>
             </div>
 
@@ -2723,7 +3564,14 @@ export const HallView: React.FC = () => {
                 className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-xs font-bold text-white flex items-center gap-1.5 shadow-lg shadow-amber-950/40 transition-transform active:scale-95"
               >
                 <Coffee className="w-3.5 h-3.5" />
-                <span>START BREAK ({Math.max(1, Math.round(selectedBreakSec / 60))} MIN)</span>
+                <span>
+                  START BREAK (
+                  {Math.floor(selectedBreakSec / 60)
+                    .toString()
+                    .padStart(2, '0')}
+                  :
+                  {(selectedBreakSec % 60).toString().padStart(2, '0')})
+                </span>
               </button>
             </div>
           </div>

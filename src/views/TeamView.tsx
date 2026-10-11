@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
+  Coffee,
   Copy,
   Edit3,
   Film,
@@ -37,7 +38,12 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
     updateMemberRole,
     removeTeamMember,
     activeHall,
-    libraryItems,
+    getTeamLibraryItems,
+    setActiveLibraryScope,
+    deleteLibraryItem,
+    deleteTeamLibrary,
+    canDeleteLibraryItem,
+    setSelectedLibraryItem,
     isCurrentUserHost,
     isApprovedInHall,
     enterApprovedHall,
@@ -48,6 +54,7 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditCredentialsModal, setShowEditCredentialsModal] = useState(false);
   const [showDeleteTeamModal, setShowDeleteTeamModal] = useState(false);
+  const [showDeleteTeamLibraryModal, setShowDeleteTeamLibraryModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
 
   // Create Team fields
@@ -75,6 +82,35 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
 
   // RBAC feedback banner
   const [rbacFeedback, setRbacFeedback] = useState<string | null>(null);
+  const [teamBreakRemainingSec, setTeamBreakRemainingSec] = useState<number>(0);
+
+  useEffect(() => {
+    if (!activeHall?.breakState?.isActive) {
+      setTeamBreakRemainingSec(0);
+      return;
+    }
+    const update = () => {
+      const b = activeHall.breakState;
+      if (!b || !b.isActive) {
+        setTeamBreakRemainingSec(0);
+        return;
+      }
+      if (b.isPaused) {
+        setTeamBreakRemainingSec(Math.max(0, b.remainingSecWhenPaused ?? b.totalDurationSec));
+        return;
+      }
+      setTeamBreakRemainingSec(Math.max(0, Math.ceil(((b.endsAt || Date.now()) - Date.now()) / 1000)));
+    };
+    update();
+    const id = setInterval(update, 500);
+    return () => clearInterval(id);
+  }, [
+    activeHall?.breakState?.isActive,
+    activeHall?.breakState?.isPaused,
+    activeHall?.breakState?.remainingSecWhenPaused,
+    activeHall?.breakState?.endsAt,
+    activeHall?.breakState?.totalDurationSec,
+  ]);
 
   const myMembership = teamMembers.find((m) => m.userId === currentUser.id);
   const isCurrentTeamOwner =
@@ -82,6 +118,7 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
   const isCurrentTeamAdmin = myMembership?.role === 'ADMIN';
 
   const onlineMembers = teamMembers.filter((m) => m.presence !== 'OFFLINE');
+  const activeTeamLibraryItems = activeTeam.id ? getTeamLibraryItems(activeTeam.id) : [];
 
   const handleCopyTeamPinInfo = async () => {
     await navigator.clipboard.writeText(
@@ -499,10 +536,24 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
             {activeHall && activeHall.status !== 'ENDED' ? (
               <div className="p-5 rounded-2xl bg-zinc-900/80 border border-rose-500/30 space-y-3">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-rose-400 font-bold flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-                    LIVE HALL
-                  </span>
+                  {activeHall.breakState?.isActive ? (
+                    <span className="text-amber-400 font-bold flex items-center gap-1.5 animate-pulse">
+                      <Coffee className="w-3.5 h-3.5" />
+                      <span>
+                        INTERVAL BREAK (
+                        {Math.floor(teamBreakRemainingSec / 60)
+                          .toString()
+                          .padStart(2, '0')}
+                        :
+                        {(teamBreakRemainingSec % 60).toString().padStart(2, '0')})
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-rose-400 font-bold flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                      LIVE HALL
+                    </span>
+                  )}
                   <span className="font-mono-tabular text-zinc-300">
                     {formatDurationMs(activeHall.positionMs)}
                   </span>
@@ -539,44 +590,88 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
           </div>
 
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-zinc-100">Team Library</h2>
-              <button
-                onClick={() => onNavigateTab('LIBRARY')}
-                className="text-xs text-rose-400 hover:underline"
-              >
-                Open Full Library
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-semibold text-zinc-100">
+                Team Library ({activeTeamLibraryItems.length})
+              </h2>
+              <div className="flex items-center gap-3">
+                {activeTeam.id && activeTeamLibraryItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteTeamLibraryModal(true)}
+                    className="text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center gap-1 transition-colors"
+                    title="Delete all videos in this Team Library"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Team Library</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    if (activeTeam.id) {
+                      selectTeam(activeTeam.id);
+                      setActiveLibraryScope(activeTeam.id);
+                    }
+                    onNavigateTab('LIBRARY');
+                  }}
+                  className="text-xs text-rose-400 hover:underline font-medium"
+                >
+                  Open Full Library
+                </button>
+              </div>
             </div>
             <div className="p-4 rounded-2xl bg-zinc-900/50 border border-zinc-800 space-y-2.5">
-              {libraryItems.length === 0 ? (
+              {activeTeamLibraryItems.length === 0 ? (
                 <div className="py-4 text-center text-xs text-zinc-500">
                   No videos in the Team Library yet.
                 </div>
               ) : (
-                libraryItems.slice(0, 3).map((item) => (
-                  <div
-                    key={item.id}
-                    onClick={() => onNavigateTab('LIBRARY')}
-                    className="flex items-center gap-3 p-2 rounded-xl hover:bg-zinc-900 cursor-pointer transition-colors"
-                  >
-                    <img
-                      src={item.posterUrl || ASSETS.posterInterstellar}
-                      alt={item.title}
-                      referrerPolicy="no-referrer"
-                      className="w-10 h-14 rounded-lg object-cover shrink-0"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-semibold text-zinc-100 truncate">
-                        {item.title}
+                activeTeamLibraryItems.slice(0, 6).map((item) => {
+                  const canDelete = canDeleteLibraryItem(item);
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => {
+                        setSelectedLibraryItem(item);
+                      }}
+                      className="flex items-center gap-3 p-2 rounded-xl hover:bg-zinc-900 cursor-pointer transition-colors"
+                    >
+                      <img
+                        src={item.posterUrl || ASSETS.posterInterstellar}
+                        alt={item.title}
+                        referrerPolicy="no-referrer"
+                        className="w-10 h-14 rounded-lg object-cover shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-zinc-100 truncate">
+                          {item.title}
+                        </div>
+                        <div className="text-[11px] text-zinc-400">
+                          Added by {item.addedByName} · {item.category}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-zinc-400">
-                        Added by {item.addedByName} · {item.category}
-                      </div>
+                      {canDelete ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteLibraryItem(item.id);
+                            setRbacFeedback(
+                              `Removed "${item.title}" from ${activeTeam.name} Library.`
+                            );
+                            setTimeout(() => setRbacFeedback(null), 3000);
+                          }}
+                          title="Delete video from Team Library"
+                          className="min-h-[32px] min-w-[32px] rounded-lg bg-zinc-950 hover:bg-rose-600 border border-zinc-800 hover:border-rose-500 text-zinc-400 hover:text-white flex items-center justify-center transition-colors shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <Film className="w-4 h-4 text-zinc-500 shrink-0" />
+                      )}
                     </div>
-                    <Film className="w-4 h-4 text-zinc-500 shrink-0" />
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -784,6 +879,58 @@ export const TeamView: React.FC<TeamViewProps> = ({ onNavigateTab }) => {
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Delete Team</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Team Library Confirmation Modal */}
+      {showDeleteTeamLibraryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-zinc-950 border border-rose-500/40 p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-rose-400 flex items-center gap-2">
+                <Trash2 className="w-4 h-4" />
+                <span>Delete Team Library</span>
+              </h3>
+              <button
+                onClick={() => setShowDeleteTeamLibraryModal(false)}
+                className="min-h-[36px] min-w-[36px] flex items-center justify-center text-zinc-400 hover:text-zinc-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-zinc-300 leading-relaxed">
+              Are you sure you want to delete all videos in{' '}
+              <strong className="text-white">&quot;{activeTeam.name} Library&quot;</strong>?
+              All <strong className="text-white">{activeTeamLibraryItems.length}</strong> video(s)
+              will be permanently removed from this Team Library.
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteTeamLibraryModal(false)}
+                className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-xs font-semibold text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await deleteTeamLibrary(activeTeam.id);
+                  setShowDeleteTeamLibraryModal(false);
+                  if (res.ok) {
+                    setRbacFeedback(
+                      `Deleted ${activeTeam.name} Library (${res.deletedCount || 0} video(s) removed).`
+                    );
+                    setTimeout(() => setRbacFeedback(null), 3500);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Team Library</span>
               </button>
             </div>
           </div>

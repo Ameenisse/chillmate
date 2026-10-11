@@ -57,6 +57,8 @@ export interface WebpageResolutionResult {
   platform: string;
   originalUrl: string;
   title: string;
+  description?: string;
+  durationMs?: number;
   thumbnailUrl?: string | null;
   playableVideoUrl: string | null;
   embedUrl: string | null;
@@ -136,13 +138,22 @@ export function resolveYouTubeVideoId(sources: {
 }
 
 /**
- * Inspect and resolve both direct media URLs (.mp4, .m3u8, .webm) AND any external video link (including YouTube)
+ * Inspect and resolve both direct media URLs (.mp4, .m3u8, .webm, .mkv, .mov) AND any external video link
+ * (MovieBox, YouTube, Vimeo, Dailymotion, Google Drive, Dropbox, Streamable, TikTok, Internet Archive, or any video source)
  * into a playable video stream, along with downloadable quality options.
  */
+export function sanitizeVideoInputUrl(rawUrl: string): string {
+  return String(rawUrl || '')
+    .trim()
+    .replace(/^['"<(]+/, '')
+    .replace(/[.,;:!?)+>\]'"]+$/, '')
+    .trim();
+}
+
 export async function resolveWebpageOrMediaUrl(
   rawUrl: string
 ): Promise<WebpageResolutionResult> {
-  const trimmed = rawUrl.trim();
+  const trimmed = sanitizeVideoInputUrl(rawUrl);
   if (!trimmed) {
     return {
       valid: false,
@@ -155,7 +166,7 @@ export async function resolveWebpageOrMediaUrl(
       embedUrl: null,
       proxyUrl: '',
       availableFormats: DEFAULT_DOWNLOAD_FORMATS,
-      reason: 'Please enter a video stream or YouTube URL.',
+      reason: 'Please enter a video link or stream URL.',
     };
   }
 
@@ -216,7 +227,7 @@ export async function resolveWebpageOrMediaUrl(
       embedUrl: null,
       proxyUrl: '',
       availableFormats: DEFAULT_DOWNLOAD_FORMATS,
-      reason: 'This video source cannot be played directly.',
+      reason: 'Invalid video URL format.',
     };
   }
 
@@ -231,13 +242,22 @@ export async function resolveWebpageOrMediaUrl(
     pathname.endsWith('.mpd') ||
     pathname.endsWith('.ogg') ||
     pathname.endsWith('.mov') ||
+    pathname.endsWith('.mkv') ||
     normalizedUrl.startsWith('blob:');
 
   if (isDirectMediaExt) {
     const fileTitle = decodeURIComponent(pathname.split('/').pop() || 'Direct Video Stream').replace(
-      /\.(mp4|webm|m3u8|mpd|ogg|mov)$/i,
+      /\.(mp4|webm|m3u8|mpd|ogg|mov|mkv)$/i,
       ''
     );
+    const isHls = pathname.endsWith('.m3u8');
+    const isBlob = normalizedUrl.startsWith('blob:');
+    const proxiedIfCrossOrigin =
+      isBlob || isHls
+        ? normalizedUrl
+        : `/api/video/stream?url=${encodeURIComponent(normalizedUrl)}&referer=${encodeURIComponent(
+            parsed.origin + '/'
+          )}`;
     return {
       valid: true,
       mode: 'DIRECT_VIDEO',
@@ -245,18 +265,18 @@ export async function resolveWebpageOrMediaUrl(
       originalUrl: normalizedUrl,
       title: fileTitle || 'Direct Video Stream',
       thumbnailUrl: null,
-      playableVideoUrl: normalizedUrl,
+      playableVideoUrl: proxiedIfCrossOrigin,
       embedUrl: null,
-      proxyUrl: normalizedUrl,
+      proxyUrl: proxiedIfCrossOrigin,
       availableFormats: [
-        { id: '1080p', label: '1080p Original Stream', ext: pathname.endsWith('.m3u8') ? 'HLS' : 'MP4', sizeBytes: 92274688, resolution: '1920x1080', videoUrl: normalizedUrl },
-        { id: '720p', label: '720p HD', ext: 'MP4', sizeBytes: 51380224, resolution: '1280x720', videoUrl: normalizedUrl },
-        { id: '480p', label: '480p SD', ext: 'MP4', sizeBytes: 27262976, resolution: '854x480', videoUrl: normalizedUrl },
+        { id: '1080p', label: '1080p Original Stream', ext: isHls ? 'HLS' : 'MP4', sizeBytes: 92274688, resolution: '1920x1080', videoUrl: proxiedIfCrossOrigin },
+        { id: '720p', label: '720p HD', ext: 'MP4', sizeBytes: 51380224, resolution: '1280x720', videoUrl: proxiedIfCrossOrigin },
+        { id: '480p', label: '480p SD', ext: 'MP4', sizeBytes: 27262976, resolution: '854x480', videoUrl: proxiedIfCrossOrigin },
       ],
     };
   }
 
-  // Query backend Direct Video Extractor for any other link (Vimeo, Archive.org, Dailymotion, or custom link)
+  // Query backend Universal Video Extractor for any other link (MovieBox, Vimeo, Archive.org, Dailymotion, Google Drive, Dropbox, Streamable, TikTok, or any custom link)
   try {
     const res = await fetch('/api/webpage/resolve', {
       method: 'POST',
@@ -290,14 +310,17 @@ export async function resolveWebpageOrMediaUrl(
         };
       }
 
-      const fallbackStream = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4';
-      const directStream = data.extractedVideoUrl || fallbackStream;
+      const directStream =
+        data.extractedVideoUrl ||
+        `/api/video/stream?url=${encodeURIComponent(normalizedUrl)}`;
       return {
         valid: true,
-        mode: 'DIRECT_VIDEO',
+        mode: data.mode || 'DIRECT_VIDEO',
         platform: data.platform || parsed.hostname,
         originalUrl: normalizedUrl,
         title: data.title || parsed.hostname,
+        description: data.description,
+        durationMs: typeof data.durationMs === 'number' && data.durationMs > 0 ? data.durationMs : undefined,
         thumbnailUrl: data.thumbnailUrl || null,
         playableVideoUrl: directStream,
         embedUrl: data.embedUrl || null,
@@ -312,31 +335,7 @@ export async function resolveWebpageOrMediaUrl(
     // Fallback below
   }
 
-  if (detectedYtId) {
-    const canonicalYtUrl = `https://www.youtube.com/watch?v=${detectedYtId}`;
-    const ytEmbedUrl = `https://www.youtube.com/embed/${detectedYtId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1`;
-    return {
-      valid: true,
-      mode: 'DIRECT_VIDEO',
-      platform: 'YouTube Video',
-      originalUrl: canonicalYtUrl,
-      title: `YouTube Video (${detectedYtId})`,
-      thumbnailUrl: `https://i.ytimg.com/vi/${detectedYtId}/hqdefault.jpg`,
-      playableVideoUrl: canonicalYtUrl,
-      embedUrl: ytEmbedUrl,
-      proxyUrl: canonicalYtUrl,
-      isYouTube: true,
-      youTubeId: detectedYtId,
-      availableFormats: [
-        { id: '1080p', label: '1080p Full HD', ext: 'MP4', sizeBytes: 94371840, resolution: '1920x1080', videoUrl: canonicalYtUrl },
-        { id: '720p', label: '720p HD', ext: 'MP4', sizeBytes: 52428800, resolution: '1280x720', videoUrl: canonicalYtUrl },
-        { id: '480p', label: '480p SD', ext: 'MP4', sizeBytes: 28311552, resolution: '854x480', videoUrl: canonicalYtUrl },
-        { id: '360p', label: '360p Fast', ext: 'MP4', sizeBytes: 15728640, resolution: '640x360', videoUrl: canonicalYtUrl },
-      ],
-    };
-  }
-
-  const fallbackDirect = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4';
+  const fallbackStream = `/api/video/stream?url=${encodeURIComponent(normalizedUrl)}`;
   return {
     valid: true,
     mode: 'DIRECT_VIDEO',
@@ -344,9 +343,9 @@ export async function resolveWebpageOrMediaUrl(
     originalUrl: normalizedUrl,
     title: parsed.hostname,
     thumbnailUrl: null,
-    playableVideoUrl: fallbackDirect,
-    embedUrl: null,
-    proxyUrl: fallbackDirect,
+    playableVideoUrl: fallbackStream,
+    embedUrl: normalizedUrl,
+    proxyUrl: fallbackStream,
     availableFormats: DEFAULT_DOWNLOAD_FORMATS,
   };
 }

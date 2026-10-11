@@ -4,6 +4,8 @@ import {
   CheckCircle2,
   Download,
   Film,
+  Folder,
+  FolderPlus,
   Link2,
   Loader2,
   Lock,
@@ -37,11 +39,15 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
     autoDownloadLinkToLibrary,
     activeLibraryScope,
     teams,
+    getFoldersForScope,
+    createLibraryFolder,
   } = useChillMate();
 
   const [urlInput, setUrlInput] = useState('');
   const [titleInput, setTitleInput] = useState('');
   const [targetScope, setTargetScope] = useState<'SELF' | string>(activeLibraryScope);
+  const [selectedFolder, setSelectedFolder] = useState<string>('Action & Sci-Fi');
+  const [customNewFolder, setCustomNewFolder] = useState<string>('');
   const [testing, setTesting] = useState(false);
   const [downloadingNow, setDownloadingNow] = useState(false);
   const [resolution, setResolution] = useState<WebpageResolutionResult | null>(null);
@@ -60,6 +66,7 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
 
   const isTargetSelf = targetScope === 'SELF' || !teams.some((t) => t.id === targetScope);
   const selectedTeamName = teams.find((t) => t.id === targetScope)?.name || 'Team';
+  const foldersForTargetScope = getFoldersForScope(targetScope);
 
   const formats = resolution?.availableFormats?.length
     ? resolution.availableFormats
@@ -113,8 +120,13 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
 
     setResolution(finalRes);
     if (finalRes.availableFormats?.length) {
-      setSelectedQualityId(finalRes.availableFormats[0].id);
+      const fastStartFmt =
+        finalRes.availableFormats.find((f) => f.id === '720p') ||
+        finalRes.availableFormats.find((f) => f.id === '480p') ||
+        finalRes.availableFormats[0];
+      setSelectedQualityId(fastStartFmt.id);
     }
+    setShowVideoPreview(true);
 
     // Clear input fills immediately after extracting
     clearAllFills();
@@ -133,13 +145,20 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
     // Clear input fills immediately
     clearAllFills();
 
+    const finalFolder = customNewFolder.trim() || selectedFolder || undefined;
+    if (customNewFolder.trim()) {
+      createLibraryFolder(customNewFolder.trim(), targetScope);
+      setCustomNewFolder('');
+    }
+
     setDownloadingNow(true);
     const item = await autoDownloadLinkToLibrary({
       url: res.originalUrl,
       title: customTitle || res.title,
       qualityLabel: selectedFormat.label,
       sizeBytes: selectedFormat.sizeBytes,
-      category: 'RECENTLY_ADDED',
+      category: 'MOVIES',
+      folderName: finalFolder,
       preResolved: res,
       targetLibraryScope: targetScope,
     });
@@ -176,7 +195,7 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
       embedUrl: res.embedUrl || undefined,
       posterUrl: res.thumbnailUrl || ASSETS.posterMidnightTokyo,
       sourceType: 'DIRECT_URL',
-      durationMs: 4400000,
+      durationMs: res.durationMs || 4400000,
     });
     onClose();
   };
@@ -200,7 +219,7 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
       posterUrl: res.thumbnailUrl || ASSETS.posterMidnightTokyo,
       backdropUrl: res.thumbnailUrl || ASSETS.backdropCinema,
       sourceType: 'DIRECT_URL',
-      durationMs: 4400000,
+      durationMs: res.durationMs || 4400000,
     });
     onClose();
   };
@@ -240,7 +259,7 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
         <div className="space-y-3">
           <div>
             <label className="block text-xs text-zinc-400 mb-1.5">
-              Paste Video Link (Extracts Direct MP4 / HLS Stream — Fills Auto-Clear)
+              Paste Any Video Source Link (MovieBox, MP4/HLS/MKV, YouTube, Drive, Vimeo, TikTok, etc.)
             </label>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
               <div className="relative flex-1">
@@ -250,10 +269,11 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
                   value={urlInput}
                   onChange={(e) => {
                     setUrlInput(e.target.value);
+                    setResolution(null);
                     setErrorMessage(null);
                     setDownloadedBanner(null);
                   }}
-                  placeholder="https://... paste link to play direct video or download"
+                  placeholder="https://v.moviebox.ph/... or any direct / platform video link"
                   className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs font-mono-tabular text-zinc-100 focus:outline-none focus:border-rose-500"
                 />
               </div>
@@ -340,6 +360,61 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
               })}
             </div>
           </div>
+
+          {/* Movie Folder Selector */}
+          <div className="space-y-2">
+            <label className="block text-xs text-zinc-400">
+              Movie Folder (Movies Manage by Folders):
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedFolder('');
+                  setCustomNewFolder('');
+                }}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors ${
+                  selectedFolder === '' && !customNewFolder.trim()
+                    ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                No Folder
+              </button>
+              {foldersForTargetScope.map((folder) => {
+                const active = selectedFolder === folder && !customNewFolder.trim();
+                return (
+                  <button
+                    key={folder}
+                    type="button"
+                    onClick={() => {
+                      setSelectedFolder(folder);
+                      setCustomNewFolder('');
+                    }}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                      active
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-200'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Folder className="w-3 h-3 text-amber-400" />
+                    <span>{folder}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="relative">
+              <FolderPlus className="w-3.5 h-3.5 text-amber-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={customNewFolder}
+                onChange={(e) => setCustomNewFolder(e.target.value)}
+                placeholder="Or type a new Movie Folder name..."
+                maxLength={60}
+                className="w-full pl-8 pr-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+          </div>
         </div>
 
         {/* Extracted Direct Video Stream & Quality Selector */}
@@ -374,12 +449,13 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
               </button>
             </div>
 
-            {/* Video Stream Preview (Supports both YouTube Video & Direct HTML5/Media3 Video) */}
+            {/* Video Stream Preview (Supports YouTube, Direct HTML5/Proxy Video, and Embedded Players) */}
             {showVideoPreview && (() => {
+              const previewStreamUrl = getDirectVideoStreamUrl(resolution);
               const previewYtId =
                 resolution.youTubeId ||
                 resolveYouTubeVideoId({
-                  videoUrl: getDirectVideoStreamUrl(resolution),
+                  videoUrl: previewStreamUrl,
                   embedUrl: resolution.embedUrl,
                   originalPageUrl: resolution.originalUrl,
                   posterUrl: resolution.thumbnailUrl,
@@ -393,12 +469,33 @@ export const DirectUrlModal: React.FC<DirectUrlModalProps> = ({ isOpen, onClose 
                       isPlaying={true}
                       className="w-full h-full"
                     />
+                  ) : resolution.mode === 'EMBED' && resolution.embedUrl ? (
+                    <iframe
+                      src={resolution.embedUrl}
+                      title={resolution.title}
+                      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                      allowFullScreen
+                      className="w-full h-full border-0 bg-black"
+                    />
                   ) : (
                     <video
-                      src={getDirectVideoStreamUrl(resolution)}
+                      key={previewStreamUrl}
+                      src={previewStreamUrl}
                       poster={resolution.thumbnailUrl || ASSETS.posterMidnightTokyo}
                       controls
+                      autoPlay
+                      preload="auto"
                       playsInline
+                      onError={(e) => {
+                        const v = e.currentTarget;
+                        if (
+                          !v.src.includes('/api/video/stream') &&
+                          previewStreamUrl.startsWith('http')
+                        ) {
+                          v.src = `/api/video/stream?url=${encodeURIComponent(previewStreamUrl)}`;
+                          v.load();
+                        }
+                      }}
                       className="w-full h-full object-contain bg-black"
                     />
                   )}

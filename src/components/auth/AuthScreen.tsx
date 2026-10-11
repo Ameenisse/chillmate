@@ -433,17 +433,26 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
           <div>
             <label className="block text-xs text-zinc-400 mb-1.5">
-              Email Address
+              {authTab === 'SIGN_IN' && !isAdminRoute
+                ? 'Email Address or Unique Username'
+                : 'Email Address'}
             </label>
             <div className="relative">
               <Mail className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
-                type="email"
+                type={authTab === 'SIGN_UP' ? 'email' : 'text'}
                 required
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setError(null);
+                  setEmail(e.target.value);
+                }}
                 placeholder={
-                  isAdminRoute ? SUPER_ADMIN_EMAIL : 'you@example.com'
+                  isAdminRoute
+                    ? SUPER_ADMIN_EMAIL
+                    : authTab === 'SIGN_IN'
+                    ? 'you@example.com or unique username'
+                    : 'you@example.com'
                 }
                 className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 focus:outline-none focus:border-rose-500"
               />

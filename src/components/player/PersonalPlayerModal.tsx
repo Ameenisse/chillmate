@@ -48,6 +48,8 @@ export const PersonalPlayerModal: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [usedProxyFallback, setUsedProxyFallback] = useState(false);
+  const [useEmbedFallback, setUseEmbedFallback] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(true);
   const [isDownloadingToLib, setIsDownloadingToLib] = useState(false);
   const [downloadedToLib, setDownloadedToLib] = useState(false);
 
@@ -211,10 +213,19 @@ export const PersonalPlayerModal: React.FC = () => {
     if (!personalSession) return;
     setPlaybackError(null);
     setUsedProxyFallback(false);
+    setIsBuffering(true);
+    setUseEmbedFallback(
+      Boolean(
+        personalSession.embedUrl &&
+          personalSession.videoUrl === personalSession.embedUrl &&
+          !personalSession.videoUrl.startsWith('/api/video/stream')
+      )
+    );
     setDownloadedToLib(false);
     setIsPlaying(true);
 
     if (youTubeVideoId) {
+      setIsBuffering(false);
       setDurationMs(personalSession.durationMs || 0);
       setCurrentTimeMs(personalSession.initialPositionMs || 0);
       return;
@@ -230,20 +241,30 @@ export const PersonalPlayerModal: React.FC = () => {
       hls.loadSource(url);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setIsBuffering(false);
         if (personalSession.initialPositionMs) {
           video.currentTime = (personalSession.initialPositionMs / 1000) % 600;
         }
-        video.play().catch(() => setIsPlaying(false));
+        video.play().catch(() => {
+          video.muted = true;
+          setMuted(true);
+          video.play().catch(() => setIsPlaying(false));
+        });
       });
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         if (data.fatal) {
+          setIsBuffering(false);
           setPlaybackError('This video source cannot be played directly.');
         }
       });
     } else {
       video.src = url;
       video.load();
+      video.play().catch(() => {
+        // Mobile Chrome may block unmuted autoplay until metadata or muted state
+      });
       video.onloadedmetadata = () => {
+        setIsBuffering(false);
         setDurationMs(
           personalSession.durationMs || Math.round((video.duration || 0) * 1000)
         );
@@ -253,7 +274,11 @@ export const PersonalPlayerModal: React.FC = () => {
             (personalSession.initialPositionMs / 1000) % video.duration
           );
         }
-        video.play().catch(() => setIsPlaying(false));
+        video.play().catch(() => {
+          video.muted = true;
+          setMuted(true);
+          video.play().catch(() => setIsPlaying(false));
+        });
       };
     }
     return () => {
@@ -360,40 +385,83 @@ export const PersonalPlayerModal: React.FC = () => {
             onPlayStateChange={(playing) => setIsPlaying(playing)}
             className="w-full h-full max-w-full max-h-full"
           />
-        ) : (
-          <video
-            ref={videoRef}
-            className="w-full h-full max-w-full max-h-full object-contain"
-            playsInline
-            onClick={togglePlay}
-            onTimeUpdate={(e) => {
-              const v = e.currentTarget;
-              if (v.duration > 0) {
-                const scaled =
-                  durationMs > 0
-                    ? Math.round((v.currentTime / v.duration) * durationMs)
-                    : Math.round(v.currentTime * 1000);
-                setCurrentTimeMs(scaled);
-              }
-            }}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onError={() => {
-              const v = videoRef.current;
-              if (
-                v &&
-                !usedProxyFallback &&
-                personalSession.videoUrl.startsWith('http')
-              ) {
-                setUsedProxyFallback(true);
-                v.src = `/api/video/stream?url=${encodeURIComponent(personalSession.videoUrl)}`;
-                v.load();
-                v.play().catch(() => {});
-                return;
-              }
-              setPlaybackError('This video source cannot be played directly.');
-            }}
+        ) : useEmbedFallback ? (
+          <iframe
+            src={personalSession.embedUrl || personalSession.videoUrl}
+            title={personalSession.title}
+            allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+            allowFullScreen
+            className="w-full h-full max-w-full max-h-full border-0 bg-black"
           />
+        ) : (
+          <>
+            <video
+              ref={videoRef}
+              poster={personalSession.posterUrl}
+              preload="auto"
+              autoPlay
+              className="w-full h-full max-w-full max-h-full object-contain bg-black"
+              playsInline
+              onClick={togglePlay}
+              onLoadedData={() => setIsBuffering(false)}
+              onCanPlay={() => setIsBuffering(false)}
+              onPlaying={() => {
+                setIsBuffering(false);
+                setIsPlaying(true);
+              }}
+              onWaiting={() => setIsBuffering(true)}
+              onTimeUpdate={(e) => {
+                const v = e.currentTarget;
+                if (v.currentTime > 0) setIsBuffering(false);
+                if (v.duration > 0) {
+                  const scaled =
+                    durationMs > 0
+                      ? Math.round((v.currentTime / v.duration) * durationMs)
+                      : Math.round(v.currentTime * 1000);
+                  setCurrentTimeMs(scaled);
+                }
+              }}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onError={() => {
+                const v = videoRef.current;
+                if (v && !usedProxyFallback) {
+                  setUsedProxyFallback(true);
+                  setIsBuffering(true);
+                  if (personalSession.videoUrl.startsWith('http')) {
+                    v.src = `/api/video/stream?url=${encodeURIComponent(personalSession.videoUrl)}`;
+                    v.load();
+                    v.play().catch(() => {});
+                    return;
+                  }
+                  if (personalSession.videoUrl.startsWith('/api/video/stream')) {
+                    const fallbackUrl = personalSession.videoUrl.includes('res=1080')
+                      ? personalSession.videoUrl.replace('res=1080', 'res=480')
+                      : `${personalSession.videoUrl}&retry=1`;
+                    v.src = fallbackUrl;
+                    v.load();
+                    v.play().catch(() => {});
+                    return;
+                  }
+                }
+                if (personalSession.embedUrl) {
+                  setIsBuffering(false);
+                  setUseEmbedFallback(true);
+                  return;
+                }
+                setIsBuffering(false);
+                setPlaybackError('This video source cannot be played directly.');
+              }}
+            />
+            {isBuffering && !playbackError && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/45 pointer-events-none gap-2.5">
+                <Loader2 className="w-10 h-10 text-rose-500 animate-spin drop-shadow-lg" />
+                <span className="text-xs font-semibold text-zinc-200 px-3 py-1 rounded-full bg-black/75 border border-white/10 backdrop-blur-md">
+                  Loading Direct Video Stream...
+                </span>
+              </div>
+            )}
+          </>
         )}
 
         {/* Dedicated Fullscreen Toggle Button directly on video player container */}
